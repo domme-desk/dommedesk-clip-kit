@@ -60,6 +60,10 @@ export type Clip = {
   file_size_bytes: number | null;
   status: 'uploaded' | 'processing' | 'ready' | 'failed';
   status_message: string | null;
+  title: string | null;
+  description: string | null;
+  tags: string[];
+  auto_description: string | null;
   created_at: string;
   updated_at: string;
 };

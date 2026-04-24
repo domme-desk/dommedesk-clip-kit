@@ -3,16 +3,11 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 import { inngest } from '@/lib/inngest';
 import { revalidatePath } from 'next/cache';
-import { redirect } from 'next/navigation';
 import { z } from 'zod';
 
 const DEFAULT_WORKSPACE_ID = '00000000-0000-0000-0000-000000000001';
 const CLIPS_BUCKET = 'clips';
 
-/**
- * Create a signed upload URL for direct browser upload to Supabase Storage.
- * Returns the signed URL and the final storage path.
- */
 export async function createClipUploadUrl(filename: string, modelId: string) {
   const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
   const storagePath = `${modelId}/${Date.now()}-${safeName}`;
@@ -35,16 +30,19 @@ const finalizeSchema = z.object({
   storage_path: z.string().min(1),
   original_filename: z.string().min(1).max(500),
   file_size_bytes: z.number().int().positive(),
+  title: z.string().min(1).max(500),
+  description: z.string().max(5000).optional(),
+  tags: z.array(z.string().min(1).max(100)).max(30).default([]),
 });
 
-/**
- * After direct upload succeeds, create the clip row and kick off the Inngest job.
- */
 export async function finalizeClipUpload(input: {
   model_id: string;
   storage_path: string;
   original_filename: string;
   file_size_bytes: number;
+  title: string;
+  description?: string;
+  tags?: string[];
 }) {
   const parsed = finalizeSchema.safeParse(input);
   if (!parsed.success) {
@@ -60,6 +58,9 @@ export async function finalizeClipUpload(input: {
       source_url: parsed.data.storage_path,
       original_filename: parsed.data.original_filename,
       file_size_bytes: parsed.data.file_size_bytes,
+      title: parsed.data.title,
+      description: parsed.data.description || null,
+      tags: parsed.data.tags,
       status: 'uploaded',
     })
     .select()
@@ -70,7 +71,6 @@ export async function finalizeClipUpload(input: {
     return { error: error.message };
   }
 
-  // Kick off the Inngest job
   await inngest.send({
     name: 'clip/uploaded',
     data: { clipId: data.id },
@@ -80,6 +80,26 @@ export async function finalizeClipUpload(input: {
   return { success: true, clipId: data.id };
 }
 
+export async function regenerateClip(clipId: string) {
+  const supabase = createAdminClient();
+
+  // Clear existing outputs and checkpoint stages so pipeline runs fresh
+  await supabase.from('thumbnail_outputs').delete().eq('clip_id', clipId);
+  await supabase.from('clip_pipeline_stages').delete().eq('clip_id', clipId);
+  await supabase
+    .from('clips')
+    .update({ status: 'uploaded', status_message: 'Regenerating...' })
+    .eq('id', clipId);
+
+  await inngest.send({
+    name: 'clip/uploaded',
+    data: { clipId },
+  });
+
+  revalidatePath(`/clips/${clipId}`);
+  return { success: true };
+}
+
 export async function listClips() {
   const supabase = createAdminClient();
   const { data, error } = await supabase
@@ -87,7 +107,6 @@ export async function listClips() {
     .select('*, models(display_name)')
     .eq('workspace_id', DEFAULT_WORKSPACE_ID)
     .order('created_at', { ascending: false });
-
   if (error) {
     console.error('[listClips] error:', error);
     return [];
@@ -102,7 +121,6 @@ export async function getClip(id: string) {
     .select('*, models(display_name)')
     .eq('id', id)
     .single();
-
   if (error) {
     console.error('[getClip] error:', error);
     return null;
@@ -117,10 +135,7 @@ export async function listThumbnailsForClip(clipId: string) {
     .select('*')
     .eq('clip_id', clipId)
     .order('variant_index', { ascending: true });
-  if (error) {
-    console.error('[listThumbnailsForClip] error:', error);
-    return [];
-  }
+  if (error) return [];
   return data;
 }
 

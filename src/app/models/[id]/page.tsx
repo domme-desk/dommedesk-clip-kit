@@ -2,7 +2,7 @@ import { getModel } from '@/lib/actions/models';
 import { listStyleLibraryItems } from '@/lib/actions/style-library';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Pencil, Images } from 'lucide-react';
+import { ArrowLeft, Pencil, Images, FileText } from 'lucide-react';
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -41,6 +41,13 @@ export default async function ModelDetailPage({ params }: Props) {
           >
             <Images size={14} />
             Style Library ({libraryItems.length})
+          </Link>
+          <Link
+            href={`/models/${model.id}/descriptions`}
+            className="inline-flex items-center gap-2 rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50"
+          >
+            <FileText size={14} />
+            Descriptions
           </Link>
           <Link
             href={`/models/${model.id}/edit`}
