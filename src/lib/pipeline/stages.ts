@@ -2,6 +2,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 
 export type StageName =
   | 'frame_extraction'
+  | 'auto_description'
   | 'frame_scoring'
   | 'composition_briefs'
   | 'subject_masking'

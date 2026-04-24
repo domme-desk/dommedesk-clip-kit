@@ -3,7 +3,7 @@ import type { CompositionBrief } from './prompts';
 
 export type CompositeInput = {
   backgroundUrl: string;
-  subjectMaskUrl: string;   // RMBG output — transparent PNG of the subject
+  subjectMaskUrl: string;
   brief: CompositionBrief;
   watermarkUrl?: string | null;
   watermarkPosition?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
@@ -28,76 +28,62 @@ function escapeXml(s: string): string {
 }
 
 /**
- * Build an SVG overlay with the brief's text. The SVG is then composited as
- * a layer by sharp. Using SVG means the text is always pixel-perfect.
+ * Trim fully-transparent padding around the subject so cropped PNG is a tight bbox.
  */
-function buildTextSvg(brief: CompositionBrief, width: number, height: number): Buffer {
-  const primarySize = Math.round(height * 0.12);
-  const secondarySize = Math.round(height * 0.055);
-  const color = brief.text_color || '#FFFFFF';
-  const shadow = brief.text_shadow ? 'filter="url(#shadow)"' : '';
+async function tightCropSubject(raw: Buffer): Promise<Buffer> {
+  return sharp(raw).trim({ threshold: 1 }).toBuffer();
+}
 
-  // Position mapping
+function buildTextSvg(brief: CompositionBrief, width: number, height: number): Buffer {
+  const primarySize = Math.round(height * 0.14);
+  const secondarySize = Math.round(height * 0.06);
+  const color = brief.text_color || '#FFFFFF';
+  const outline = brief.text_outline_color || '#000000';
+  const strokeWidth = Math.max(3, Math.round(primarySize * 0.06));
+
   let anchor: 'start' | 'middle' | 'end' = 'middle';
   let x = width / 2;
   let yPrimary = height / 2;
-
   const pad = Math.round(height * 0.06);
 
   switch (brief.text_position) {
     case 'top':
-      anchor = 'middle';
-      x = width / 2;
-      yPrimary = pad + primarySize;
-      break;
+      anchor = 'middle'; x = width / 2; yPrimary = pad + primarySize; break;
     case 'bottom':
-      anchor = 'middle';
-      x = width / 2;
-      yPrimary = height - pad;
-      break;
+      anchor = 'middle'; x = width / 2; yPrimary = height - pad; break;
     case 'top-left':
-      anchor = 'start';
-      x = pad;
-      yPrimary = pad + primarySize;
-      break;
+      anchor = 'start'; x = pad; yPrimary = pad + primarySize; break;
     case 'top-right':
-      anchor = 'end';
-      x = width - pad;
-      yPrimary = pad + primarySize;
-      break;
+      anchor = 'end'; x = width - pad; yPrimary = pad + primarySize; break;
     case 'bottom-left':
-      anchor = 'start';
-      x = pad;
-      yPrimary = height - pad;
-      break;
+      anchor = 'start'; x = pad; yPrimary = height - pad; break;
     case 'bottom-right':
-      anchor = 'end';
-      x = width - pad;
-      yPrimary = height - pad;
-      break;
+      anchor = 'end'; x = width - pad; yPrimary = height - pad; break;
     case 'center':
     default:
-      anchor = 'middle';
-      x = width / 2;
-      yPrimary = height / 2;
+      anchor = 'middle'; x = width / 2; yPrimary = height / 2;
   }
 
   const ySecondary = yPrimary + primarySize * 0.9;
 
-  const secondary = brief.text_secondary
-    ? `<text x="${x}" y="${ySecondary}" text-anchor="${anchor}" font-family="Impact, 'Arial Black', sans-serif" font-size="${secondarySize}" font-weight="700" fill="${color}" ${shadow}>${escapeXml(brief.text_secondary)}</text>`
+  const primaryText = escapeXml(brief.text_primary);
+  const secondaryText = brief.text_secondary ? escapeXml(brief.text_secondary) : '';
+
+  const primaryFont = `font-family="Impact, Arial Black, sans-serif" font-size="${primarySize}" font-weight="900"`;
+  const secondaryFont = `font-family="Impact, Arial Black, sans-serif" font-size="${secondarySize}" font-weight="700"`;
+
+  // Draw each text twice: once as outline stroke, once as fill, for strong readability
+  const primaryStroke = `<text x="${x}" y="${yPrimary}" text-anchor="${anchor}" ${primaryFont} fill="none" stroke="${outline}" stroke-width="${strokeWidth}" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke">${primaryText}</text>`;
+  const primaryFill = `<text x="${x}" y="${yPrimary}" text-anchor="${anchor}" ${primaryFont} fill="${color}" filter="url(#shadow)">${primaryText}</text>`;
+
+  const secondaryStroke = secondaryText
+    ? `<text x="${x}" y="${ySecondary}" text-anchor="${anchor}" ${secondaryFont} fill="none" stroke="${outline}" stroke-width="${Math.max(2, Math.round(strokeWidth * 0.6))}" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke">${secondaryText}</text>`
+    : '';
+  const secondaryFill = secondaryText
+    ? `<text x="${x}" y="${ySecondary}" text-anchor="${anchor}" ${secondaryFont} fill="${color}" filter="url(#shadow)">${secondaryText}</text>`
     : '';
 
-  const svg = `
-<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
-      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.7"/>
-    </filter>
-  </defs>
-  <text x="${x}" y="${yPrimary}" text-anchor="${anchor}" font-family="Impact, 'Arial Black', sans-serif" font-size="${primarySize}" font-weight="900" fill="${color}" ${shadow}>${escapeXml(brief.text_primary)}</text>
-  ${secondary}
-</svg>`.trim();
+  const svg = `<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg"><defs><filter id="shadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="6" stdDeviation="10" flood-color="#000" flood-opacity="0.85"/></filter></defs>${primaryStroke}${primaryFill}${secondaryStroke}${secondaryFill}</svg>`;
 
   return Buffer.from(svg);
 }
@@ -124,36 +110,53 @@ function watermarkOffset(
 export async function composite(input: CompositeInput): Promise<Buffer> {
   const { backgroundUrl, subjectMaskUrl, brief, watermarkUrl, watermarkPosition } = input;
 
-  // 1. Fetch and resize the background to target canvas size
   const [bgRaw, subjRaw] = await Promise.all([
     fetchBuffer(backgroundUrl),
     fetchBuffer(subjectMaskUrl),
   ]);
 
+  // 1. Background filling entire canvas
   const background = await sharp(bgRaw)
     .resize(TARGET_WIDTH, TARGET_HEIGHT, { fit: 'cover', position: 'center' })
     .toBuffer();
 
-  // 2. Resize subject to fit within canvas. Keep aspect ratio, fit inside the
-  // bottom-centered zone with a small bottom padding. We resize to fit a box
-  // that is 90% of canvas height, anchored bottom-center.
-  const subjectFitted = await sharp(subjRaw)
+  // 2. Subject: tight-crop transparent padding, then fill 95% of canvas height
+  const tightSubject = await tightCropSubject(subjRaw);
+  const subjectFitted = await sharp(tightSubject)
     .resize({
-      width: Math.round(TARGET_WIDTH * 0.8),
       height: Math.round(TARGET_HEIGHT * 0.95),
       fit: 'inside',
+      withoutEnlargement: false,
     })
     .toBuffer();
-  const subjMeta = await sharp(subjectFitted).metadata();
-  const subjW = subjMeta.width || TARGET_WIDTH;
-  const subjH = subjMeta.height || TARGET_HEIGHT;
-  const subjLeft = Math.round((TARGET_WIDTH - subjW) / 2);
-  const subjTop = TARGET_HEIGHT - subjH;
 
-  // 3. Build text overlay SVG
+  const subjMeta = await sharp(subjectFitted).metadata();
+  const subjW = subjMeta.width || 0;
+  const subjH = subjMeta.height || 0;
+
+  // If the subject is wider than the canvas (rare), constrain width
+  let finalSubject = subjectFitted;
+  let finalW = subjW;
+  let finalH = subjH;
+  if (subjW > TARGET_WIDTH * 0.95) {
+    finalSubject = await sharp(tightSubject)
+      .resize({
+        width: Math.round(TARGET_WIDTH * 0.9),
+        fit: 'inside',
+      })
+      .toBuffer();
+    const m = await sharp(finalSubject).metadata();
+    finalW = m.width || TARGET_WIDTH;
+    finalH = m.height || TARGET_HEIGHT;
+  }
+
+  const subjLeft = Math.round((TARGET_WIDTH - finalW) / 2);
+  const subjTop = TARGET_HEIGHT - finalH;  // anchor bottom
+
+  // 3. Text overlay (drawn AFTER subject so it overlaps)
   const textSvg = buildTextSvg(brief, TARGET_WIDTH, TARGET_HEIGHT);
 
-  // 4. Optional watermark
+  // 4. Optional watermark (always last, above everything)
   let watermarkLayer: { input: Buffer; left: number; top: number } | null = null;
   if (watermarkUrl) {
     const wmRaw = await fetchBuffer(watermarkUrl);
@@ -167,9 +170,8 @@ export async function composite(input: CompositeInput): Promise<Buffer> {
     watermarkLayer = { input: wmSized, left: offset.left, top: offset.top };
   }
 
-  // 5. Compose all layers
   const layers: sharp.OverlayOptions[] = [
-    { input: subjectFitted, left: subjLeft, top: subjTop },
+    { input: finalSubject, left: subjLeft, top: subjTop },
     { input: textSvg, left: 0, top: 0 },
   ];
   if (watermarkLayer) layers.push(watermarkLayer);

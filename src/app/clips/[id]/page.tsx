@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { RefreshButton } from './refresh-button';
+import { RegenerateButton } from './regenerate-button';
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -21,6 +22,7 @@ export default async function ClipDetailPage({ params }: Props) {
   ]);
 
   const modelName = (clip.models as { display_name: string } | null)?.display_name;
+  const effectiveDesc = clip.description || clip.auto_description;
 
   return (
     <main className="mx-auto max-w-5xl px-6 py-12">
@@ -32,12 +34,21 @@ export default async function ClipDetailPage({ params }: Props) {
         Back to clips
       </Link>
 
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">{clip.original_filename}</h1>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1">
+          <h1 className="text-2xl font-bold">{clip.title || clip.original_filename}</h1>
           <p className="mt-1 text-sm text-neutral-500">
             {modelName} · uploaded {new Date(clip.created_at).toLocaleString()}
           </p>
+          {clip.tags && clip.tags.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {clip.tags.map((t, i) => (
+                <span key={i} className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
+                  {t}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <StatusBadge status={clip.status} />
       </div>
@@ -48,8 +59,25 @@ export default async function ClipDetailPage({ params }: Props) {
         </div>
       )}
 
+      {effectiveDesc && (
+        <section className="mt-6 rounded-lg border border-neutral-200 p-4">
+          <div className="mb-1 flex items-center gap-2">
+            <h2 className="text-sm font-semibold">Description</h2>
+            {!clip.description && clip.auto_description && (
+              <span className="rounded-full bg-blue-100 px-2 py-0.5 text-xs text-blue-700">
+                AI-generated
+              </span>
+            )}
+          </div>
+          <p className="whitespace-pre-wrap text-sm text-neutral-700">{effectiveDesc}</p>
+        </section>
+      )}
+
       <section className="mt-8">
-        <h2 className="mb-3 font-semibold">Thumbnails</h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-semibold">Thumbnails</h2>
+          {clip.status === 'ready' && <RegenerateButton clipId={clip.id} />}
+        </div>
         {thumbnails.length === 0 ? (
           <EmptyThumbnails status={clip.status} />
         ) : (
@@ -134,13 +162,10 @@ function StagesList({ stages }: { stages: StageRow[] }) {
     <ul className="space-y-2 text-sm">
       {stages.map((s) => {
         const tone =
-          s.status === 'completed'
-            ? 'bg-green-100 text-green-700'
-            : s.status === 'running'
-            ? 'bg-blue-100 text-blue-700'
-            : s.status === 'failed'
-            ? 'bg-red-100 text-red-700'
-            : 'bg-neutral-100 text-neutral-600';
+          s.status === 'completed' ? 'bg-green-100 text-green-700'
+          : s.status === 'running' ? 'bg-blue-100 text-blue-700'
+          : s.status === 'failed' ? 'bg-red-100 text-red-700'
+          : 'bg-neutral-100 text-neutral-600';
         return (
           <li key={s.id} className="flex items-center justify-between">
             <span className="font-mono text-xs">{s.stage}</span>
