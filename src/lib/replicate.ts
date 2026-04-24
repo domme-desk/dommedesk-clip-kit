@@ -4,43 +4,37 @@ export const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN!,
 });
 
-// Model identifiers — pinned versions for reproducibility.
-// Update these only when intentionally adopting a new model version.
+// Model identifiers — using model slugs (not pinned versions) so Replicate
+// auto-resolves the latest published version. We can pin specific versions
+// later once we've validated outputs.
 export const MODELS = {
-  // Subject segmentation / background removal
-  rmbg: 'lucataco/remove-bg:95fcc2a26d3899cd6c2691c900465aaeff4ba8ed9a83aebdf0b9c86db8be8ddf',
+  // Background removal / subject segmentation. bria/remove-background is a
+  // well-maintained official model with stable output behavior.
+  rmbg: 'bria/remove-background',
   // Image generation (Nano Banana / Gemini 2.5 Flash Image)
   nanoBanana: 'google/nano-banana',
 } as const;
 
 /**
- * Run Replicate RMBG to produce a transparent-background PNG of the subject.
- * Returns the URL of the masked output.
+ * Run background removal to produce a transparent-background PNG of the subject.
+ * Returns a URL pointing to the masked output.
  */
 export async function removeBackground(imageUrl: string): Promise<string> {
-  const output = await replicate.run(MODELS.rmbg, {
+  const output = await replicate.run(MODELS.rmbg as `${string}/${string}`, {
     input: { image: imageUrl },
   });
 
-  // RMBG returns a single URL (string) or a ReadableStream depending on version
-  if (typeof output === 'string') return output;
-  if (output instanceof ReadableStream) {
-    // Convert stream to blob, then upload to our own storage
-    throw new Error('Stream output not expected from RMBG; check model version.');
-  }
-  // Some versions return an array
-  if (Array.isArray(output) && typeof output[0] === 'string') return output[0];
-
-  console.error('[removeBackground] unexpected output shape:', output);
-  throw new Error('Unexpected RMBG output shape.');
+  return extractUrl(output, 'removeBackground');
 }
 
 /**
  * Generate an image with Nano Banana (Gemini 2.5 Flash Image).
- * Use for thematic backgrounds ("money spiral", "velvet curtain", etc.).
  */
-export async function generateBackground(prompt: string, aspectRatio: '16:9' | '9:16' | '1:1' = '16:9'): Promise<string> {
-  const output = await replicate.run(MODELS.nanoBanana, {
+export async function generateBackground(
+  prompt: string,
+  aspectRatio: '16:9' | '9:16' | '1:1' = '16:9'
+): Promise<string> {
+  const output = await replicate.run(MODELS.nanoBanana as `${string}/${string}`, {
     input: {
       prompt,
       aspect_ratio: aspectRatio,
@@ -48,13 +42,28 @@ export async function generateBackground(prompt: string, aspectRatio: '16:9' | '
     },
   });
 
+  return extractUrl(output, 'generateBackground');
+}
+
+/**
+ * Replicate's output shape varies between models and SDK versions. Try the
+ * common shapes in priority order.
+ */
+function extractUrl(output: unknown, label: string): string {
   if (typeof output === 'string') return output;
-  if (Array.isArray(output) && typeof output[0] === 'string') return output[0];
-  // Some Replicate SDK versions return file-like objects with a url() method
+
+  if (Array.isArray(output)) {
+    const first = output[0];
+    if (typeof first === 'string') return first;
+    if (first && typeof (first as { url?: () => string }).url === 'function') {
+      return (first as { url: () => string }).url();
+    }
+  }
+
   if (output && typeof (output as { url?: () => string }).url === 'function') {
     return (output as { url: () => string }).url();
   }
 
-  console.error('[generateBackground] unexpected output shape:', output);
-  throw new Error('Unexpected Nano Banana output shape.');
+  console.error(`[${label}] unexpected output shape:`, output);
+  throw new Error(`Unexpected ${label} output shape.`);
 }
