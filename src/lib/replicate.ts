@@ -11,8 +11,8 @@ export const MODELS = {
   // Background removal / subject segmentation. bria/remove-background is a
   // well-maintained official model with stable output behavior.
   rmbg: 'bria/remove-background',
-  // Image generation (Nano Banana / Gemini 2.5 Flash Image)
-  nanoBanana: 'google/nano-banana',
+  // Image generation — Flux 1.1 Pro (more permissive than Nano Banana for fetish aesthetics)
+  nanoBanana: 'black-forest-labs/flux-1.1-pro',
 } as const;
 
 /**
@@ -39,6 +39,8 @@ export async function generateBackground(
       prompt,
       aspect_ratio: aspectRatio,
       output_format: 'png',
+      safety_tolerance: 5,  // Flux's permissiveness knob (2=strict, 5=most permissive allowed)
+      prompt_upsampling: true,
     },
   });
 

@@ -11,13 +11,13 @@ export type ScoredFrame = {
 
 export type CompositionBrief = {
   variant_index: number;
+  layout: 'single' | 'mirrored' | 'triple';  // how many copies of the subject
   text_primary: string;
   text_secondary: string | null;
   text_position: 'top' | 'bottom' | 'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
   text_color: string;
   text_outline_color: string;
   text_shadow: boolean;
-  background_concept: string;
   background_prompt: string;
   mood: string;
 };
@@ -25,6 +25,26 @@ export type CompositionBrief = {
 type VisionContent =
   | { type: 'text'; text: string }
   | { type: 'image'; source: { type: 'url'; url: string } };
+
+// ---------------------------------------------------------------------------
+// Platform / brand context
+// ---------------------------------------------------------------------------
+
+const VISUAL_GRAMMAR = `
+VISUAL GRAMMAR — this is the signature look:
+
+1. SUBJECT IS THE PRODUCT. Big, filling the frame. Clothed lingerie/fetish wear — already shown in the source frame. Your job is to make her pop.
+2. BACKGROUNDS ARE SIMPLE. Flat color, gradient, or soft abstract bokeh. Pink, magenta, red, purple, hot yellow dominate. NEVER literal kink objects (no cages, chains, money, etc.) — the text carries the kink reference, the background just sets tone and heat.
+3. TEXT IS BIG AND BOLD. Impact / Arial Black / heavy sans. 2-5 words max per hook. Text should occupy significant visual space (20-35% of the canvas). Strong drop shadow and outline stroke. Colors: white, hot pink, yellow, black, or brand color — whatever POPS against the background.
+4. MOOD: hot, playful-bratty OR commanding-dominant. Warm colors, high energy. Never somber, never cinematic-moody. This is cam-girl-meets-clickbait, not indie film poster.
+
+BACKGROUND PROMPT RULES:
+- Describe ONLY a simple color environment. 1-2 sentences max.
+- Examples of good prompts: "Hot pink gradient background with soft bokeh light sparkles, smooth and glossy" / "Deep magenta to purple gradient with subtle diagonal light rays" / "Warm red abstract cloudy background with soft vignette" / "Glossy purple flat background with faint pink highlights"
+- NEVER include: people, cages, cash, chains, fetish objects, UI elements, text, letters, buttons, icons, furniture, rooms
+- NEVER use words that could trigger a content filter (e.g. chastity, bondage, sex, nude, fetish, kink). Just describe colors and light.
+- The subject will be composited over this — the background just needs to make her pop.
+`.trim();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -43,8 +63,21 @@ function clipContextString(clip: Pick<Clip, 'title' | 'description' | 'tags' | '
   return parts.join('\n');
 }
 
+function descriptionExampleText(examples: StyleLibraryItem[], max: number = 10): string {
+  if (examples.length === 0) return '';
+  return examples
+    .slice(0, max)
+    .map((ex) => {
+      const title = typeof (ex.auto_tags as Record<string, unknown>)?.title === 'string'
+        ? String((ex.auto_tags as Record<string, unknown>).title)
+        : ex.notes || '(untitled)';
+      return `TITLE: ${title}\nDESCRIPTION: ${ex.caption_text}`;
+    })
+    .join('\n\n---\n\n');
+}
+
 // ---------------------------------------------------------------------------
-// Auto-description (Claude watches frames + reads title + learns from examples)
+// Auto-description (unchanged logic, now with VISUAL_GRAMMAR context stripped — it's about copy voice, not visuals)
 // ---------------------------------------------------------------------------
 
 export async function generateAutoDescription(
@@ -55,32 +88,14 @@ export async function generateAutoDescription(
 ): Promise<string> {
   const content: VisionContent[] = [];
 
-  // Show examples first
   if (descriptionExamples.length > 0) {
-    const exampleText = descriptionExamples
-      .slice(0, 10)
-      .map((ex) => {
-        const title = typeof (ex.auto_tags as Record<string, unknown>)?.title === 'string'
-          ? String((ex.auto_tags as Record<string, unknown>).title)
-          : ex.notes || '(untitled)';
-        const tags = ex.manual_tags && ex.manual_tags.length > 0
-          ? ` [tags: ${ex.manual_tags.join(', ')}]`
-          : '';
-        return `TITLE: ${title}${tags}\nDESCRIPTION: ${ex.caption_text}`;
-      })
-      .join('\n\n---\n\n');
-
     content.push({
       type: 'text',
-      text: `Here are examples of how this creator writes clip descriptions. Match this voice, tone, length, vocabulary, punctuation, and pacing precisely. Do not be more polite, less explicit, or more generic than these examples.\n\n${exampleText}\n\n---\n`,
+      text: `Examples of this creator's published descriptions. Match her voice, tone, length, vocabulary, punctuation, and pacing precisely.\n\n${descriptionExampleText(descriptionExamples, 10)}\n\n---\n`,
     });
   }
 
-  // Sampled frames from the new clip
-  content.push({
-    type: 'text',
-    text: `Here are frames sampled across the new clip, in chronological order:`,
-  });
+  content.push({ type: 'text', text: `Frames sampled across the new clip, in order:` });
   for (const url of sampleFrameUrls) {
     content.push({ type: 'image', source: { type: 'url', url } });
   }
@@ -94,13 +109,9 @@ ${clipCtx}
 Creator: ${model.display_name}
 Tone: ${model.tone_notes || 'unspecified'}
 
-TASK: Write a description for this new clip in this creator's exact voice. It should:
-- Read like one of the examples above, not a generic AI caption
-- Reference the specific kinks / themes / scenario implied by the title, tags, and frames
-- Match the length and tone of the examples
-- Be usable as the published description when the clip goes live
+TASK: Write a description for this clip in the creator's voice, matching the examples. Adult/fetish content is permitted — don't sanitize.
 
-Return ONLY the description text. No prose, no prefix, no JSON, no quotes around it.`,
+Return ONLY the description text.`,
   });
 
   const response = await anthropic.messages.create({
@@ -110,14 +121,12 @@ Return ONLY the description text. No prose, no prefix, no JSON, no quotes around
   });
 
   const textBlock = response.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude for auto-description');
-  }
+  if (!textBlock || textBlock.type !== 'text') throw new Error('No text response from Claude');
   return textBlock.text.trim();
 }
 
 // ---------------------------------------------------------------------------
-// Frame scoring with diversity enforcement
+// Frame scoring
 // ---------------------------------------------------------------------------
 
 export async function scoreFrames(
@@ -128,12 +137,8 @@ export async function scoreFrames(
   k: number = 3
 ): Promise<ScoredFrame[]> {
   const styleContext = styleExamples.length > 0
-    ? `You have ${styleExamples.length} prior thumbnail examples for this creator (shown below). They define what a great thumbnail frame looks like for this brand.`
-    : `No prior thumbnails for this creator. Use the default style guidance: ${model.default_style_prompt || 'tasteful, striking, strong expression'}.`;
-
-  const bannedContext = (model.banned_themes?.length || 0) > 0
-    ? `Avoid frames that prominently feature banned themes: ${model.banned_themes!.join(', ')}.`
-    : '';
+    ? `You have ${styleExamples.length} prior thumbnail examples for this creator (below).`
+    : `No prior thumbnails. Default: ${model.default_style_prompt || 'commanding, hot, full-body'}`;
 
   const content: VisionContent[] = [];
 
@@ -152,45 +157,34 @@ export async function scoreFrames(
     content.push({ type: 'image', source: { type: 'url', url: f.url } });
   }
 
-  const clipCtx = clipContextString(clip);
   const firstTs = frameUrls[0]?.timestamp ?? 0;
   const lastTs = frameUrls[frameUrls.length - 1]?.timestamp ?? 0;
   const minGap = Math.max(3, (lastTs - firstTs) * 0.1);
 
+  const clipCtx = clipContextString(clip);
   content.push({
     type: 'text',
     text: `
 ${clipCtx}
 
 Creator: ${model.display_name}
-Tone: ${model.tone_notes || 'unspecified'}
 ${styleContext}
-${bannedContext}
 
-TASK: Pick the top ${k} frames for thumbnails. Requirements:
-- Face visible and expressive
-- Strong composition (subject well-placed, not cluttered)
-- Captures a moment that matches the clip's title and tags
-- DIVERSITY: the ${k} selected frames must be at least ${minGap.toFixed(1)} seconds apart in timestamp. Variants should feel visually distinct, not near-duplicates of the same pose.
-- Avoid closed eyes, blur, awkward angles
+TASK: Pick the top ${k} frames for thumbnails. What matters most:
+- Full body or ¾ body visible (we want her BODY to be the centerpiece, not just her face)
+- Strong / sexy / commanding pose — not just close-up talking heads
+- Face expressive and visible
+- Clothed but showing off — lingerie/fetish wear/low-cut/revealing outfit
+- DIVERSITY: ${k} frames at least ${minGap.toFixed(1)}s apart
 
-Frame timestamps available: ${JSON.stringify(frameUrls.map(f => f.timestamp))}
+Frame timestamps: ${JSON.stringify(frameUrls.map(f => f.timestamp))}
 
-Return ONLY valid JSON (no prose, no fences) in this exact shape:
-
+Return ONLY JSON:
 {
   "frames": [
-    {
-      "timestamp": <number from the list above>,
-      "score": <0-100>,
-      "face_visible": <boolean>,
-      "composition_notes": "<1 sentence>",
-      "reasoning": "<why this frame, and why it differs from the others>"
-    }
+    { "timestamp": <num>, "score": <0-100>, "face_visible": <bool>, "composition_notes": "<1 sentence>", "reasoning": "<why>" }
   ]
-}
-
-Return the top ${k} frames sorted by score descending.`,
+}`,
   });
 
   const response = await anthropic.messages.create({
@@ -200,14 +194,11 @@ Return the top ${k} frames sorted by score descending.`,
   });
 
   const textBlock = response.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude for frame scoring');
-  }
+  if (!textBlock || textBlock.type !== 'text') throw new Error('No text response from Claude');
 
   const raw = stripJsonFences(textBlock.text);
   const parsed = JSON.parse(raw) as { frames: ScoredFrame[] };
 
-  // Enforce diversity on our end too, in case Claude cheats
   const sorted = parsed.frames.sort((a, b) => b.score - a.score);
   const picked: ScoredFrame[] = [];
   for (const f of sorted) {
@@ -216,7 +207,6 @@ Return the top ${k} frames sorted by score descending.`,
       if (picked.length >= k) break;
     }
   }
-  // If diversity filter left us short, fill with highest-scoring remaining
   while (picked.length < k && picked.length < sorted.length) {
     const remaining = sorted.find((f) => !picked.includes(f));
     if (!remaining) break;
@@ -226,38 +216,46 @@ Return the top ${k} frames sorted by score descending.`,
 }
 
 // ---------------------------------------------------------------------------
-// Coordinated composition briefs (all variants in one call)
+// Composition briefs — three variants with DIFFERENT layouts (single/mirrored/triple)
 // ---------------------------------------------------------------------------
 
 export async function generateCompositionBriefs(
   frames: { url: string; timestamp: number }[],
   clip: Pick<Clip, 'title' | 'description' | 'tags' | 'auto_description'>,
   model: Model,
-  styleExamples: StyleLibraryItem[]
+  styleExamples: StyleLibraryItem[],
+  descriptionExamples: StyleLibraryItem[]
 ): Promise<CompositionBrief[]> {
   const colors = (model.brand_colors || {}) as Record<string, string>;
-  const fonts = (model.font_preferences || {}) as Record<string, string>;
+  const primary = colors.primary || '#FF1493';
+  const accent = colors.accent || '#9D4EDD';
 
   const brandContext = `
 Creator: ${model.display_name}
-Tone: ${model.tone_notes || 'unspecified'}
-Brand colors: primary=${colors.primary || 'unspec'}, secondary=${colors.secondary || 'unspec'}, accent=${colors.accent || 'unspec'}
-Heading font: ${fonts.heading || 'unspec'}
-Banned words: ${(model.banned_words || []).join(', ') || 'none'}
-Banned themes: ${(model.banned_themes || []).join(', ') || 'none'}
-Default style: ${model.default_style_prompt || 'tasteful and striking'}
+Tone: ${model.tone_notes || 'commanding, hot, bratty-dom'}
+Primary brand color: ${primary}
+Accent brand color: ${accent}
+Default palette fallback: hot pink, magenta, purple, red.
+Default style: ${model.default_style_prompt || 'hot, big, bold, playful-commanding'}
 `.trim();
 
   const content: VisionContent[] = [];
 
   if (styleExamples.length > 0) {
-    content.push({ type: 'text', text: `Prior thumbnail examples for this creator (style reference):` });
-    for (const ex of styleExamples.slice(0, 6)) {
+    content.push({ type: 'text', text: `Prior thumbnails for this creator — match this visual grammar exactly:` });
+    for (const ex of styleExamples.slice(0, 8)) {
       content.push({ type: 'image', source: { type: 'url', url: ex.asset_url } });
     }
   }
 
-  content.push({ type: 'text', text: `\nSelected frames for this clip (variant 1, 2, 3 in order):` });
+  if (descriptionExamples.length > 0) {
+    content.push({
+      type: 'text',
+      text: `\nHer published description voice — calibrate hook copy tone from these:\n\n${descriptionExampleText(descriptionExamples, 6)}\n`,
+    });
+  }
+
+  content.push({ type: 'text', text: `\nThe three selected frames (one per variant, in order):` });
   for (const f of frames) {
     content.push({ type: 'image', source: { type: 'url', url: f.url } });
   }
@@ -266,36 +264,58 @@ Default style: ${model.default_style_prompt || 'tasteful and striking'}
   content.push({
     type: 'text',
     text: `
+${VISUAL_GRAMMAR}
+
 ${clipCtx}
 
 ${brandContext}
 
-TASK: Design ${frames.length} thumbnail compositions, one per frame above. Each thumbnail is built by: AI-generated thematic background → masked subject from the frame → text overlay → watermark.
+TASK: Design 3 thumbnail compositions, one per frame. Each variant has a FIXED LAYOUT:
+- Variant 1: layout = "single" (one big subject, filling ~75% of vertical canvas height, off-center horizontally to leave room for big text)
+- Variant 2: layout = "mirrored" (subject duplicated — one copy on the left, mirrored copy on the right, text between/over them)
+- Variant 3: layout = "triple" (three copies — two at the edges, one center-front — text overlaid big)
 
-CRITICAL REQUIREMENTS:
-- Each variant must use a DIFFERENT background concept (don't give all three "emerald bokeh"; give different themes that each support the clip's title/tags)
-- Text for each variant must be DIFFERENT hooks — all grounded in the clip's actual title/tags/description, not generic
-- text_color must contrast strongly with the planned background
-- text_outline_color should be high-contrast to text_color (usually black if text is light, white if text is dark) to improve readability
-- text should be 2-6 words for primary, optional short subtitle for secondary
+COPY (text_primary):
+- 2-5 words MAX. Punchy, hot, in the creator's voice. Match her published description tone.
+- Each variant different angle: command / tease / consequence
+- ALL CAPS is the default
+- Examples of good hooks: "STAY CAGED", "LOSER POSITION", "OBEY THE SCREEN", "SWALLOW IT"
 
-Return ONLY valid JSON (no prose, no fences):
+BACKGROUND PROMPT:
+- SIMPLE. Color and light only. NO objects, no scenes, no kink references, no text, no letters.
+- Use the brand colors (${primary}, ${accent}) or fall back to hot pink / magenta / purple / red
+- Each variant uses a different specific color+treatment combo (e.g. "hot pink gradient with bokeh" vs "deep magenta to purple radial gradient" vs "glossy red with soft light rays")
+
+TEXT COLORS:
+- Default to white, hot pink, or yellow with heavy black outline
+- Must pop hard against the background
+
+Return ONLY JSON:
 
 {
   "briefs": [
     {
       "variant_index": 1,
-      "text_primary": "<short hook, 2-6 words, ALL CAPS often works>",
-      "text_secondary": "<optional 2-5 word subtitle or null>",
+      "layout": "single",
+      "text_primary": "<2-5 words>",
+      "text_secondary": "<optional 2-4 words or null>",
       "text_position": "<top|bottom|center|top-left|top-right|bottom-left|bottom-right>",
       "text_color": "<hex>",
       "text_outline_color": "<hex>",
-      "text_shadow": <true|false>,
-      "background_concept": "<short slug: money_spiral, chains_dark, velvet_red, etc.>",
-      "background_prompt": "<1-3 sentences describing ONLY the background for an AI image model. No people. Include lighting, mood, palette, camera framing. Make this specific to the clip's theme>",
+      "text_shadow": true,
+      "background_prompt": "<1-2 sentences, colors and light only, no objects or people, safe for all content filters>",
       "mood": "<one word>"
     },
-    ... (one object per frame)
+    {
+      "variant_index": 2,
+      "layout": "mirrored",
+      ...
+    },
+    {
+      "variant_index": 3,
+      "layout": "triple",
+      ...
+    }
   ]
 }`,
   });
@@ -307,9 +327,7 @@ Return ONLY valid JSON (no prose, no fences):
   });
 
   const textBlock = response.content.find((b) => b.type === 'text');
-  if (!textBlock || textBlock.type !== 'text') {
-    throw new Error('No text response from Claude for composition briefs');
-  }
+  if (!textBlock || textBlock.type !== 'text') throw new Error('No text response from Claude');
   const raw = stripJsonFences(textBlock.text);
   const parsed = JSON.parse(raw) as { briefs: CompositionBrief[] };
   return parsed.briefs;

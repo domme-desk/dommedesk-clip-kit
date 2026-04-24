@@ -205,7 +205,8 @@ export const processClip = inngest.createFunction(
           scoredOutput.top,
           enrichedClip,
           ctx.model,
-          ctx.thumbExamples
+          ctx.thumbExamples,
+          ctx.descExamples
         );
         const out = { briefs };
         await markStageComplete(clipId, 'composition_briefs', out);
@@ -243,7 +244,7 @@ export const processClip = inngest.createFunction(
           watermarkPosition: ctx.model.watermark_position,
         });
 
-        const finalPath = `clips/${clipId}/thumbnails/variant-${variantIndex}.png`;
+        const finalPath = `clips/${clipId}/thumbnails/variant-${variantIndex}-${Date.now()}.png`;
         const finalUpload = await uploadFile(finalPath, composedPng, 'image/png');
         if ('error' in finalUpload) throw new Error(`Thumbnail upload failed: ${finalUpload.error}`);
 
