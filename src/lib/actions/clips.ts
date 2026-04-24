@@ -85,7 +85,10 @@ export async function regenerateClip(clipId: string) {
 
   // Clear existing outputs and checkpoint stages so pipeline runs fresh
   await supabase.from('thumbnail_outputs').delete().eq('clip_id', clipId);
-  await supabase.from('clip_pipeline_stages').delete().eq('clip_id', clipId);
+  await supabase.from('clip_pipeline_stages')
+      .delete()
+      .eq('clip_id', clipId)
+      .in('stage', ['template_selection', 'subject_cutouts', 'render_variant_1', 'render_variant_2', 'render_variant_3']);
   await supabase
     .from('clips')
     .update({ status: 'uploaded', status_message: 'Regenerating...' })

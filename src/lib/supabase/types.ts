@@ -64,6 +64,7 @@ export type Clip = {
   description: string | null;
   tags: string[];
   auto_description: string | null;
+  cutout_urls: string[] | null;
   created_at: string;
   updated_at: string;
 };
@@ -77,6 +78,7 @@ export type ThumbnailOutput = {
   composition_brief: Record<string, unknown> | null;
   variant_index: number;
   generation_metadata: Record<string, unknown>;
+  template_id: string | null;
   created_at: string;
 };
 

@@ -76,7 +76,18 @@ export async function downloadToTmp(url: string, extension: string = 'mp4'): Pro
   const hash = crypto.randomBytes(6).toString('hex');
   const out = path.join(tmpDir, `${hash}.${extension}`);
 
-  const res = await fetch(url);
+  // If we got a storage path instead of a full URL, get a signed URL via Supabase admin
+  let fetchUrl = url;
+  if (!/^https?:\/\//i.test(url)) {
+    const { createAdminClient } = await import('@/lib/supabase/admin');
+    const supabase = createAdminClient();
+    const { data, error } = await supabase.storage.from('clips').createSignedUrl(url, 60 * 10);
+    if (error || !data?.signedUrl) {
+      throw new Error(`Failed to sign URL for ${url}: ${error?.message || 'unknown'}`);
+    }
+    fetchUrl = data.signedUrl;
+  }
+  const res = await fetch(fetchUrl);
   if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
   const buf = Buffer.from(await res.arrayBuffer());
   await fs.writeFile(out, buf);

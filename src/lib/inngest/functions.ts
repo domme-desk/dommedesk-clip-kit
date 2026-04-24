@@ -1,280 +1,334 @@
-import { inngest } from '../inngest';
+import { inngest } from '@/lib/inngest';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { uploadFile } from '@/lib/supabase/storage';
 import { extractFrames, downloadToTmp, cleanup } from '@/lib/ffmpeg';
 import {
   scoreFrames,
-  generateCompositionBriefs,
   generateAutoDescription,
+  selectTemplatesForClip,
 } from '@/lib/pipeline/prompts';
-import { composite } from '@/lib/pipeline/compositor';
-import { removeBackground, generateBackground } from '@/lib/replicate';
+import { renderTemplate } from '@/lib/pipeline/template-renderer';
+import { removeBackground } from '@/lib/replicate';
 import {
   markStageRunning,
   markStageComplete,
   markStageFailed,
   getCompletedStage,
 } from '@/lib/pipeline/stages';
-import fs from 'fs/promises';
-import type { Model, StyleLibraryItem, Clip } from '@/lib/supabase/types';
+import { TEMPLATES } from '@/lib/pipeline/templates';
+import type { Clip, Model, StyleLibraryItem } from '@/lib/supabase/types';
+
+// ---------------------------------------------------------------------------
+// Types used across stages
+// ---------------------------------------------------------------------------
+
+type PipelineContext = {
+  clip: Clip;
+  model: Model;
+  thumbExamples: StyleLibraryItem[];
+  descExamples: StyleLibraryItem[];
+};
+
+type FrameRecord = { url: string; timestamp: number; path: string };
+
+// ---------------------------------------------------------------------------
+// processClip — main Inngest function
+// ---------------------------------------------------------------------------
 
 export const processClip = inngest.createFunction(
   {
-    id: 'process-clip',
-    name: 'Process Clip',
+    id: 'dommedesk-clip-kit-process-clip',
     triggers: [{ event: 'clip/uploaded' }],
   },
   async ({ event, step }) => {
     const { clipId } = event.data as { clipId: string };
     const supabase = createAdminClient();
 
-    // -----------------------------------------------------------------
-    // Load context: clip, model, thumbnail examples, description examples
-    // -----------------------------------------------------------------
-    const ctx = await step.run('load-context', async () => {
-      const { data: clip } = await supabase.from('clips').select('*').eq('id', clipId).single();
-      if (!clip) throw new Error(`Clip ${clipId} not found`);
+    // Helper: load context fresh each invocation (cheap)
+    async function loadContext(): Promise<PipelineContext> {
+      const { data: clipData, error: clipErr } = await supabase.from('clips').select('*').eq('id', clipId).single();
+      if (clipErr || !clipData) throw new Error(`Clip not found: ${clipId}`);
+      const clip = clipData as Clip;
 
-      const { data: model } = await supabase.from('models').select('*').eq('id', clip.model_id).single();
-      if (!model) throw new Error(`Model ${clip.model_id} not found`);
+      const { data: modelData, error: modelErr } = await supabase.from('models').select('*').eq('id', clip.model_id).single();
+      if (modelErr || !modelData) throw new Error(`Model not found: ${clip.model_id}`);
+      const model = modelData as Model;
 
       const { data: thumbExamples } = await supabase
         .from('style_library_items')
         .select('*')
-        .eq('model_id', model.id)
-        .eq('scope', 'model')
-        .eq('asset_type', 'thumbnail');
+        .eq('model_id', clip.model_id)
+        .eq('asset_type', 'thumbnail')
+        .order('created_at', { ascending: false })
+        .limit(20);
 
       const { data: descExamples } = await supabase
         .from('style_library_items')
         .select('*')
-        .eq('model_id', model.id)
-        .eq('scope', 'model')
-        .eq('asset_type', 'caption');
-
-      await supabase.from('clips').update({ status: 'processing', status_message: 'Loading context...' }).eq('id', clipId);
+        .eq('model_id', clip.model_id)
+        .eq('asset_type', 'caption')
+        .order('created_at', { ascending: false })
+        .limit(20);
 
       return {
-        clip: clip as Clip,
-        model: model as Model,
-        thumbExamples: (thumbExamples || []) as StyleLibraryItem[],
-        descExamples: (descExamples || []) as StyleLibraryItem[],
+        clip,
+        model,
+        thumbExamples: (thumbExamples as StyleLibraryItem[]) || [],
+        descExamples: (descExamples as StyleLibraryItem[]) || [],
       };
-    });
+    }
 
-    // -----------------------------------------------------------------
-    // Stage: Frame extraction
-    // -----------------------------------------------------------------
-    const framesOutput = await step.run('frame-extraction', async () => {
-      const cached = await getCompletedStage<{ frames: { url: string; timestamp: number }[] }>(clipId, 'frame_extraction');
-      if (cached && cached.frames?.length > 0) return cached;
+    async function updateStatus(message: string) {
+      await supabase.from('clips').update({ status_message: message }).eq('id', clipId);
+    }
 
-      await markStageRunning(clipId, 'frame_extraction');
-      await supabase.from('clips').update({ status_message: 'Extracting frames...' }).eq('id', clipId);
+    await updateStatus('Loading context...');
+    const ctx0 = await loadContext();
+    if (!ctx0.clip.source_url) throw new Error('Clip has no source_url');
+
+    // -----------------------------------------------------------------------
+    // Stage: frame_extraction
+    // -----------------------------------------------------------------------
+    const framesData = await step.run('frame_extraction', async () => {
+      const existing = await getCompletedStage(supabase, clipId, 'frame_extraction');
+      if (existing?.output) return existing.output as { frames: FrameRecord[] };
+
+      await markStageRunning(supabase, clipId, 'frame_extraction');
+      await updateStatus('Extracting frames...');
 
       try {
-        const { data: signed } = await supabase.storage
-          .from('clips')
-          .createSignedUrl(ctx.clip.source_url, 60 * 10);
-        if (!signed?.signedUrl) throw new Error('Could not sign source clip URL');
+        const tmpPath = await downloadToTmp(ctx0.clip.source_url!);
+        const extracted = await extractFrames(tmpPath, 30);
+        const frames: FrameRecord[] = [];
 
-        const ext = ctx.clip.original_filename?.split('.').pop()?.toLowerCase() || 'mp4';
-        const localVideo = await downloadToTmp(signed.signedUrl, ext);
-
-        const frames = await extractFrames(localVideo, 30);
-
-        const uploaded: { url: string; timestamp: number }[] = [];
-        for (const f of frames) {
-          const buf = await fs.readFile(f.localPath);
-          const path = `clips/${clipId}/frames/frame-${f.timestamp.toFixed(2).replace('.', '_')}.jpg`;
-          const res = await uploadFile(path, buf, 'image/jpeg');
-          if (!('error' in res)) {
-            uploaded.push({ url: res.url, timestamp: f.timestamp });
-          }
+        for (let i = 0; i < extracted.length; i++) {
+          const f = extracted[i];
+          const buf = await (await import('fs/promises')).readFile(f.localPath);
+          const storagePath = `clips/${clipId}/frames/frame-${i.toString().padStart(3, '0')}.jpg`;
+          const uploadResult = await uploadFile(storagePath, buf, 'image/jpeg');
+        if ('error' in uploadResult) throw new Error(`Upload failed: ${uploadResult.error}`);
+        const publicUrl = uploadResult.url;
+          frames.push({ url: publicUrl, timestamp: f.timestamp, path: storagePath });
         }
 
-        await cleanup(localVideo);
-        for (const f of frames) await cleanup(f.localPath);
-
-        const out = { frames: uploaded };
-        await markStageComplete(clipId, 'frame_extraction', out);
-        return out;
+        await cleanup(tmpPath);
+        const output = { frames };
+        await markStageComplete(supabase, clipId, 'frame_extraction', output);
+        return output;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await markStageFailed(clipId, 'frame_extraction', msg);
+        await markStageFailed(supabase, clipId, 'frame_extraction', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
 
-    // -----------------------------------------------------------------
-    // Stage: Auto-description (if user didn't supply one)
-    // -----------------------------------------------------------------
-    const autoDescOutput = await step.run('auto-description', async () => {
-      const cached = await getCompletedStage<{ description: string | null }>(clipId, 'auto_description' as 'frame_extraction');
-      if (cached && cached.description !== undefined) return cached;
+    // -----------------------------------------------------------------------
+    // Stage: auto_description (runs if clip.description is blank)
+    // -----------------------------------------------------------------------
+    await step.run('auto_description', async () => {
+      const existing = await getCompletedStage(supabase, clipId, 'auto_description');
+      if (existing) return;
+      if (ctx0.clip.description && ctx0.clip.description.trim().length > 0) return;
 
-      // If user supplied a description, use that and skip AI generation
-      if (ctx.clip.description && ctx.clip.description.trim().length > 0) {
-        const out = { description: ctx.clip.description };
-        await markStageComplete(clipId, 'auto_description' as 'frame_extraction', out);
-        return out;
-      }
-
-      await markStageRunning(clipId, 'auto_description' as 'frame_extraction');
-      await supabase.from('clips').update({ status_message: 'Writing description...' }).eq('id', clipId);
+      await markStageRunning(supabase, clipId, 'auto_description');
+      await updateStatus('Writing description in model voice...');
 
       try {
-        // Sample ~6 frames spread across the clip
-        const sampled = framesOutput.frames
-          .filter((_, i, arr) => i % Math.max(1, Math.floor(arr.length / 6)) === 0)
+        const ctx = await loadContext();
+        const sampleUrls = framesData.frames
+          .filter((_, i) => i % Math.max(1, Math.floor(framesData.frames.length / 6)) === 0)
           .slice(0, 6)
           .map((f) => f.url);
-
-        const description = await generateAutoDescription(
-          sampled,
-          ctx.clip,
-          ctx.descExamples,
-          ctx.model
-        );
-
-        // Save back to clip row
-        await supabase.from('clips').update({ auto_description: description }).eq('id', clipId);
-
-        const out = { description };
-        await markStageComplete(clipId, 'auto_description' as 'frame_extraction', out);
-        return out;
+        const desc = await generateAutoDescription(sampleUrls, ctx.clip, ctx.descExamples, ctx.model);
+        await supabase.from('clips').update({ auto_description: desc }).eq('id', clipId);
+        await markStageComplete(supabase, clipId, 'auto_description', { length: desc.length });
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await markStageFailed(clipId, 'auto_description' as 'frame_extraction', msg);
+        await markStageFailed(supabase, clipId, 'auto_description', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
 
-    // Update the clip object with the resolved description for downstream stages
-    const enrichedClip: Clip = {
-      ...ctx.clip,
-      auto_description: autoDescOutput.description,
-    };
+    // -----------------------------------------------------------------------
+    // Stage: frame_scoring — pick top 3 frames
+    // -----------------------------------------------------------------------
+    const scoredOutput = await step.run('frame_scoring', async () => {
+      const existing = await getCompletedStage(supabase, clipId, 'frame_scoring');
+      if (existing?.output) return existing.output as { top: { url: string; timestamp: number }[] };
 
-    // -----------------------------------------------------------------
-    // Stage: Frame scoring (diverse top 3)
-    // -----------------------------------------------------------------
-    const scoredOutput = await step.run('frame-scoring', async () => {
-      const cached = await getCompletedStage<{ top: { url: string; timestamp: number; score: number }[] }>(clipId, 'frame_scoring');
-      if (cached && cached.top?.length > 0) return cached;
-
-      await markStageRunning(clipId, 'frame_scoring');
-      await supabase.from('clips').update({ status_message: 'Scoring frames with Claude...' }).eq('id', clipId);
+      await markStageRunning(supabase, clipId, 'frame_scoring');
+      await updateStatus('Scoring frames with Claude...');
 
       try {
+        const ctx = await loadContext();
         const scored = await scoreFrames(
-          framesOutput.frames,
-          enrichedClip,
+          framesData.frames.map((f) => ({ url: f.url, timestamp: f.timestamp })),
+          ctx.clip,
           ctx.model,
           ctx.thumbExamples,
           3
         );
-        const top = scored.map((s) => {
-          const match =
-            framesOutput.frames.find((f) => Math.abs(f.timestamp - s.timestamp) < 0.05) ||
-            framesOutput.frames[0];
-          return { url: match.url, timestamp: s.timestamp, score: s.score };
-        });
-        const out = { top };
-        await markStageComplete(clipId, 'frame_scoring', out);
-        return out;
+        const topByTimestamp = new Map(framesData.frames.map((f) => [f.timestamp, f]));
+        const top = scored
+          .map((s) => {
+            const match = topByTimestamp.get(s.timestamp);
+            return match ? { url: match.url, timestamp: s.timestamp } : null;
+          })
+          .filter((x): x is { url: string; timestamp: number } => x !== null);
+
+        const output = { top };
+        await markStageComplete(supabase, clipId, 'frame_scoring', output);
+        return output;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await markStageFailed(clipId, 'frame_scoring', msg);
+        await markStageFailed(supabase, clipId, 'frame_scoring', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
 
-    // -----------------------------------------------------------------
-    // Stage: Coordinated composition briefs (all 3 in one call)
-    // -----------------------------------------------------------------
-    const briefsOutput = await step.run('composition-briefs', async () => {
-      const cached = await getCompletedStage<{ briefs: unknown[] }>(clipId, 'composition_briefs');
-      if (cached && Array.isArray(cached.briefs) && cached.briefs.length > 0) return cached;
+    // -----------------------------------------------------------------------
+    // Stage: template_selection — Claude picks 3 templates + writes hook copy
+    // -----------------------------------------------------------------------
+    const selections = await step.run('template_selection', async () => {
+      const existing = await getCompletedStage(supabase, clipId, 'template_selection');
+      if (existing?.output) return (existing.output as { selections: Awaited<ReturnType<typeof selectTemplatesForClip>> }).selections;
 
-      await markStageRunning(clipId, 'composition_briefs');
-      await supabase.from('clips').update({ status_message: 'Designing thumbnails...' }).eq('id', clipId);
+      await markStageRunning(supabase, clipId, 'template_selection');
+      await updateStatus('Selecting templates and writing copy...');
 
       try {
-        const briefs = await generateCompositionBriefs(
+        const ctx = await loadContext();
+        const picks = await selectTemplatesForClip(
           scoredOutput.top,
-          enrichedClip,
+          ctx.clip,
           ctx.model,
           ctx.thumbExamples,
           ctx.descExamples
         );
-        const out = { briefs };
-        await markStageComplete(clipId, 'composition_briefs', out);
-        return out;
+        await markStageComplete(supabase, clipId, 'template_selection', { selections: picks });
+        return picks;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await markStageFailed(clipId, 'composition_briefs', msg);
+        await markStageFailed(supabase, clipId, 'template_selection', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
 
-    // -----------------------------------------------------------------
-    // For each variant: mask + background + composite
-    // -----------------------------------------------------------------
-    const briefs = (briefsOutput.briefs as ReturnType<typeof generateCompositionBriefs> extends Promise<infer R> ? R : never);
-    for (let i = 0; i < scoredOutput.top.length; i++) {
+    // -----------------------------------------------------------------------
+    // Stage: subject_cutouts — background removal on all unique frames needed
+    // -----------------------------------------------------------------------
+    const cutoutMap = await step.run('subject_cutouts', async () => {
+      const existing = await getCompletedStage(supabase, clipId, 'subject_cutouts');
+      if (existing?.output) return (existing.output as { map: Record<number, string> }).map;
+
+      await markStageRunning(supabase, clipId, 'subject_cutouts');
+      await updateStatus('Removing backgrounds from subjects...');
+
+      try {
+        // Figure out which frame indices are needed across all 3 templates
+        const neededIndices = new Set<number>();
+        for (const sel of selections) {
+          const template = TEMPLATES[sel.template_id];
+          if (!template) continue;
+          // Use the selection's frame_indices, or fall back to [0]
+          const indices = (sel.frame_indices && sel.frame_indices.length > 0) ? sel.frame_indices : [0];
+          for (const idx of indices.slice(0, template.frames_needed)) {
+            neededIndices.add(idx);
+          }
+        }
+
+        const map: Record<number, string> = {};
+        for (const idx of neededIndices) {
+          const frame = scoredOutput.top[idx];
+          if (!frame) continue;
+          const maskUrl = await removeBackground(frame.url);
+
+          // Download and re-upload to our storage so we own the asset
+          const maskRes = await fetch(maskUrl);
+          const maskBuf = Buffer.from(await maskRes.arrayBuffer());
+          const storagePath = `clips/${clipId}/cutouts/cutout-${idx}-${Date.now()}.png`;
+          const uploadResult = await uploadFile(storagePath, maskBuf, 'image/png');
+        if ('error' in uploadResult) throw new Error(`Upload failed: ${uploadResult.error}`);
+        const publicUrl = uploadResult.url;
+          map[idx] = publicUrl;
+        }
+
+        // Persist cutout URLs on clip row for future reuse
+        const cutoutUrls = Object.values(map);
+        await supabase.from('clips').update({ cutout_urls: cutoutUrls }).eq('id', clipId);
+
+        await markStageComplete(supabase, clipId, 'subject_cutouts', { map });
+        return map;
+      } catch (err) {
+        await markStageFailed(supabase, clipId, 'subject_cutouts', err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    });
+
+    // -----------------------------------------------------------------------
+    // Stage: render_variants — render each template into final thumbnail
+    // -----------------------------------------------------------------------
+    for (let i = 0; i < selections.length; i++) {
+      const sel = selections[i];
+      const template = TEMPLATES[sel.template_id];
+      if (!template) continue;
       const variantIndex = i + 1;
-      const frame = scoredOutput.top[i];
-      const brief = briefs[i] || briefs[briefs.length - 1];
 
-      await step.run(`variant-${variantIndex}`, async () => {
-        await supabase
-          .from('clips')
-          .update({ status_message: `Generating variant ${variantIndex}/${scoredOutput.top.length}...` })
-          .eq('id', clipId);
+      await step.run(`render_variant_${variantIndex}`, async () => {
+        await updateStatus(`Rendering variant ${variantIndex}/${selections.length} (${template.name})...`);
 
-        const subjectMaskUrl = await removeBackground(frame.url);
-        const backgroundUrl = await generateBackground(brief.background_prompt, '16:9');
+        const ctx = await loadContext();
 
-        const composedPng = await composite({
-          backgroundUrl,
-          subjectMaskUrl,
-          brief,
-          watermarkUrl: ctx.model.watermark_url,
-          watermarkPosition: ctx.model.watermark_position,
+        // Pick the subject URLs this template needs
+        const indices = (sel.frame_indices && sel.frame_indices.length > 0) ? sel.frame_indices : [0];
+        const subjectUrls: string[] = [];
+        for (let j = 0; j < template.frames_needed; j++) {
+          const idx = indices[j] ?? 0;
+          const url = cutoutMap[idx];
+          if (!url) throw new Error(`Missing cutout for frame index ${idx}`);
+          subjectUrls.push(url);
+        }
+
+        const pngBuf = await renderTemplate({
+          template_id: sel.template_id,
+          subject_urls: subjectUrls,
+          text_primary: sel.text_primary,
+          text_secondary: sel.text_secondary,
+          palette: sel.palette,
+          watermark_url: ctx.model.watermark_url,
+          watermark_position: (ctx.model.watermark_position as 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center' | undefined) || 'bottom-right',
         });
 
-        const finalPath = `clips/${clipId}/thumbnails/variant-${variantIndex}-${Date.now()}.png`;
-        const finalUpload = await uploadFile(finalPath, composedPng, 'image/png');
-        if ('error' in finalUpload) throw new Error(`Thumbnail upload failed: ${finalUpload.error}`);
+        const storagePath = `clips/${clipId}/thumbnails/variant-${variantIndex}-${Date.now()}.png`;
+        const uploadResult = await uploadFile(storagePath, pngBuf, 'image/png');
+        if ('error' in uploadResult) throw new Error(`Upload failed: ${uploadResult.error}`);
+        const publicUrl = uploadResult.url;
 
         await supabase.from('thumbnail_outputs').insert({
           clip_id: clipId,
-          image_url: finalUpload.url,
-          source_frame_url: frame.url,
-          source_frame_timestamp: frame.timestamp,
-          composition_brief: brief as unknown as Record<string, unknown>,
           variant_index: variantIndex,
+          image_url: publicUrl,
+          template_id: sel.template_id,
+          composition_brief: {
+            template_id: sel.template_id,
+            text_primary: sel.text_primary,
+            text_secondary: sel.text_secondary,
+            palette: sel.palette,
+            reasoning: sel.reasoning,
+          },
           generation_metadata: {
-            score: frame.score,
-            background_url: backgroundUrl,
-            subject_mask_url: subjectMaskUrl,
+            template: template.name,
+            frame_indices: indices,
           },
         });
-
-        return { variantIndex };
       });
     }
 
-    await step.run('mark-ready', async () => {
-      await supabase
-        .from('clips')
-        .update({ status: 'ready', status_message: 'Thumbnails generated.' })
-        .eq('id', clipId);
-      return { clipId };
-    });
+    // -----------------------------------------------------------------------
+    // Mark clip ready
+    // -----------------------------------------------------------------------
+    await supabase.from('clips').update({
+      status: 'ready',
+      status_message: 'Thumbnails generated.',
+    }).eq('id', clipId);
 
-    return { success: true, clipId };
+    return { success: true, variants_rendered: selections.length };
   }
 );
 

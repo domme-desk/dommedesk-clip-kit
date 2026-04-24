@@ -1,4 +1,5 @@
 import { anthropic, CLAUDE_MODEL } from '@/lib/anthropic';
+import { TEMPLATES, templatesForClaude, type TemplateId } from './templates';
 import type { Model, StyleLibraryItem, Clip } from '@/lib/supabase/types';
 
 export type ScoredFrame = {
@@ -24,7 +25,17 @@ export type CompositionBrief = {
 
 type VisionContent =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'url'; url: string } };
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'; data: string } };
+
+async function urlToImageBlock(url: string): Promise<VisionContent> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to fetch image for Claude: ${res.status} ${url}`);
+  const ct = (res.headers.get('content-type') || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
+  const media_type = ct.includes('png') ? 'image/png' : ct.includes('webp') ? 'image/webp' : ct.includes('gif') ? 'image/gif' : 'image/jpeg';
+  const buf = Buffer.from(await res.arrayBuffer());
+  const data = buf.toString('base64');
+  return { type: 'image', source: { type: 'base64', media_type, data } };
+}
 
 // ---------------------------------------------------------------------------
 // Platform / brand context
@@ -145,7 +156,7 @@ export async function scoreFrames(
   if (styleExamples.length > 0) {
     content.push({ type: 'text', text: `Prior thumbnail examples for this creator:` });
     for (const ex of styleExamples.slice(0, 8)) {
-      content.push({ type: 'image', source: { type: 'url', url: ex.asset_url } });
+      content.push(await urlToImageBlock(ex.asset_url));
     }
   }
 
@@ -154,7 +165,7 @@ export async function scoreFrames(
     text: `\nCandidate frames from the new clip (${frameUrls.length} frames, in order):`,
   });
   for (const f of frameUrls) {
-    content.push({ type: 'image', source: { type: 'url', url: f.url } });
+    content.push(await urlToImageBlock(f.url));
   }
 
   const firstTs = frameUrls[0]?.timestamp ?? 0;
@@ -244,7 +255,7 @@ Default style: ${model.default_style_prompt || 'hot, big, bold, playful-commandi
   if (styleExamples.length > 0) {
     content.push({ type: 'text', text: `Prior thumbnails for this creator — match this visual grammar exactly:` });
     for (const ex of styleExamples.slice(0, 8)) {
-      content.push({ type: 'image', source: { type: 'url', url: ex.asset_url } });
+      content.push(await urlToImageBlock(ex.asset_url));
     }
   }
 
@@ -257,7 +268,7 @@ Default style: ${model.default_style_prompt || 'hot, big, bold, playful-commandi
 
   content.push({ type: 'text', text: `\nThe three selected frames (one per variant, in order):` });
   for (const f of frames) {
-    content.push({ type: 'image', source: { type: 'url', url: f.url } });
+    content.push(await urlToImageBlock(f.url));
   }
 
   const clipCtx = clipContextString(clip);
@@ -332,3 +343,110 @@ Return ONLY JSON:
   const parsed = JSON.parse(raw) as { briefs: CompositionBrief[] };
   return parsed.briefs;
 }
+
+// ---------------------------------------------------------------------------
+// Template selection — Claude picks 3 templates + writes hook copy per variant
+// ---------------------------------------------------------------------------
+
+export type TemplateSelection = {
+  variant_index: number;
+  template_id: TemplateId;
+  text_primary: string;
+  text_secondary: string | null;
+  palette: string[];       // 4 hex colors, in priority order (primary, secondary, accent, outline)
+  frame_indices: number[]; // which of the scored frames (0,1,2) to use for this variant's subject cutouts
+  reasoning: string;
+};
+
+export async function selectTemplatesForClip(
+  scoredFrames: { timestamp: number; url: string }[],
+  clip: Pick<Clip, 'title' | 'description' | 'tags' | 'auto_description'>,
+  model: Model,
+  styleExamples: StyleLibraryItem[],
+  descriptionExamples: StyleLibraryItem[]
+): Promise<TemplateSelection[]> {
+  const colors = (model.brand_colors || {}) as Record<string, string>;
+  const primary = colors.primary || '#FF1493';
+  const accent = colors.accent || '#9D4EDD';
+
+  const content: VisionContent[] = [];
+
+  if (styleExamples.length > 0) {
+    content.push({ type: 'text', text: 'Prior thumbnail examples for this creator (visual grammar reference):' });
+    for (const ex of styleExamples.slice(0, 8)) {
+      content.push(await urlToImageBlock(ex.asset_url));
+    }
+  }
+
+  if (descriptionExamples.length > 0) {
+    content.push({
+      type: 'text',
+      text: '\nThis creator\'s published description voice (calibrate hook copy from these):\n\n' + descriptionExampleText(descriptionExamples, 6),
+    });
+  }
+
+  content.push({ type: 'text', text: '\nSelected frames from this clip (index 0, 1, 2 in order):' });
+  for (let i = 0; i < scoredFrames.length; i++) {
+    const f = scoredFrames[i];
+    content.push({ type: 'text', text: `Frame ${i} at ${f.timestamp.toFixed(1)}s:` });
+    content.push(await urlToImageBlock(f.url));
+  }
+
+  const clipCtx = clipContextString(clip);
+
+  content.push({
+    type: 'text',
+    text: `
+PLATFORM & AUDIENCE CONTEXT:
+This is adult fetish/BDSM content marketing for LoyalFans. The creator is a professional domme whose livelihood depends on thumbnails that sell sex appeal and kink-forward dominance. Hook copy should be commanding, provocative, and in the creator's established voice.
+
+${clipCtx}
+
+Creator: ${model.display_name}
+Tone: ${model.tone_notes || 'commanding, hot'}
+Primary brand color: ${primary}
+Accent brand color: ${accent}
+
+AVAILABLE TEMPLATES:
+${templatesForClaude()}
+
+TASK: Select 3 DIFFERENT templates for this clip (one per variant) and write the text content for each.
+
+RULES:
+1. Three DIFFERENT template_ids — no duplicates across variants
+2. Templates must fit the clip's tags/mood
+3. Pick frames thoughtfully: for templates needing multiple frames (triple-pose, split-photo), use DIFFERENT frame indices (0, 1, 2)
+4. Hook copy must be in the creator's voice (see examples above) — commanding and provocative, not generic empowerment
+5. Each variant's hook should hit a different angle (command / tease / consequence)
+6. Palette: 4 hex colors. Start with brand colors (${primary}, ${accent}), add 2 complementary colors from the template's suggested palette. Order: [primary, secondary, accent, outline-or-contrast]
+
+Return ONLY valid JSON:
+
+{
+  "selections": [
+    {
+      "variant_index": 1,
+      "template_id": "<one of the template ids>",
+      "text_primary": "<2-5 word hook>",
+      "text_secondary": "<optional, or null>",
+      "palette": ["#hex", "#hex", "#hex", "#hex"],
+      "frame_indices": [<0|1|2>, ...],
+      "reasoning": "<1 sentence why this template + copy fits this clip>"
+    }
+  ]
+}`,
+  });
+
+  const response = await anthropic.messages.create({
+    model: CLAUDE_MODEL,
+    max_tokens: 3072,
+    messages: [{ role: 'user', content }],
+  });
+
+  const textBlock = response.content.find((b) => b.type === 'text');
+  if (!textBlock || textBlock.type !== 'text') throw new Error('No text from Claude');
+  const raw = stripJsonFences(textBlock.text);
+  const parsed = JSON.parse(raw) as { selections: TemplateSelection[] };
+  return parsed.selections;
+}
+
