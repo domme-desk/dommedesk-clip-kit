@@ -19,10 +19,13 @@ export default function Home() {
           </p>
         </Link>
 
-        <div className="rounded-lg border border-dashed border-neutral-300 p-6 opacity-50">
-          <h2 className="font-semibold">Clips</h2>
-          <p className="mt-1 text-sm text-neutral-500">Coming next</p>
-        </div>
+        <Link
+          href="/clips"
+          className="rounded-lg border border-neutral-200 p-6 hover:border-black"
+        >
+          <h2 className="font-semibold">Clips &rarr;</h2>
+          <p className="mt-1 text-sm text-neutral-500">Upload and process clips</p>
+        </Link>
       </div>
     </main>
   );
