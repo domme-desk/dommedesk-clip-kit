@@ -1,7 +1,8 @@
 import { getModel } from '@/lib/actions/models';
+import { listStyleLibraryItems } from '@/lib/actions/style-library';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { ArrowLeft, Pencil } from 'lucide-react';
+import { ArrowLeft, Pencil, Images } from 'lucide-react';
 
 type Props = {
   params: Promise<{ id: string }>;
@@ -12,6 +13,7 @@ export default async function ModelDetailPage({ params }: Props) {
   const model = await getModel(id);
   if (!model) notFound();
 
+  const libraryItems = await listStyleLibraryItems(id, 'thumbnail');
   const colors = (model.brand_colors || {}) as Record<string, string>;
   const fonts = (model.font_preferences || {}) as Record<string, string>;
 
@@ -32,13 +34,22 @@ export default async function ModelDetailPage({ params }: Props) {
             Created {new Date(model.created_at).toLocaleDateString()}
           </p>
         </div>
-        <Link
-          href={`/models/${model.id}/edit`}
-          className="inline-flex items-center gap-2 rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50"
-        >
-          <Pencil size={14} />
-          Edit Brand Kit
-        </Link>
+        <div className="flex gap-2">
+          <Link
+            href={`/models/${model.id}/library`}
+            className="inline-flex items-center gap-2 rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50"
+          >
+            <Images size={14} />
+            Style Library ({libraryItems.length})
+          </Link>
+          <Link
+            href={`/models/${model.id}/edit`}
+            className="inline-flex items-center gap-2 rounded-md border border-neutral-300 px-4 py-2 text-sm font-medium hover:bg-neutral-50"
+          >
+            <Pencil size={14} />
+            Edit Brand Kit
+          </Link>
+        </div>
       </div>
 
       <div className="mt-8 space-y-4">
@@ -143,14 +154,6 @@ export default async function ModelDetailPage({ params }: Props) {
               )}
             </div>
           </div>
-        </section>
-
-        <section className="rounded-lg border border-dashed border-neutral-300 p-5">
-          <h2 className="mb-2 font-semibold text-neutral-600">Coming next</h2>
-          <ul className="space-y-1 text-sm text-neutral-500">
-            <li>&bull; Style library (upload thumbnail examples for this model)</li>
-            <li>&bull; Clip upload and pipeline</li>
-          </ul>
         </section>
       </div>
     </main>
