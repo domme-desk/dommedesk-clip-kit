@@ -109,3 +109,28 @@ export async function getClip(id: string) {
   }
   return data;
 }
+
+export async function listThumbnailsForClip(clipId: string) {
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from('thumbnail_outputs')
+    .select('*')
+    .eq('clip_id', clipId)
+    .order('variant_index', { ascending: true });
+  if (error) {
+    console.error('[listThumbnailsForClip] error:', error);
+    return [];
+  }
+  return data;
+}
+
+export async function getPipelineStages(clipId: string) {
+  const supabase = createAdminClient();
+  const { data, error } = await supabase
+    .from('clip_pipeline_stages')
+    .select('*')
+    .eq('clip_id', clipId)
+    .order('created_at', { ascending: true });
+  if (error) return [];
+  return data;
+}
