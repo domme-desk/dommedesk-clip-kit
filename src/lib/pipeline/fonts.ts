@@ -21,8 +21,18 @@ export type FontKey =
   | 'dancing-script'
   | 'pacifico'
   | 'playfair-display-black'
+  | 'playfair-display-italic'
   | 'orbitron'
-  | 'permanent-marker';
+  | 'permanent-marker'
+  | 'abril-fatface'
+  | 'monoton'
+  | 'yeseva-one'
+  | 'alfa-slab-one'
+  | 'caveat'
+  | 'pinyon-script'
+  | 'rubik-mono-one'
+  | 'passion-one'
+  | 'sacramento';
 
 type FontSpec = {
   family: string;           // CSS font-family name for SVG
@@ -92,6 +102,67 @@ const FONT_SPECS: Record<FontKey, FontSpec> = {
     fileName: 'permanent-marker-latin-400-normal.woff2',
     weight: 400,
   },
+  'playfair-display-italic': {
+    family: 'Playfair Display',
+    fontsourcePackage: '@fontsource/playfair-display',
+    fileName: 'playfair-display-latin-900-italic.woff2',
+    weight: 900,
+  },
+  'abril-fatface': {
+    family: 'Abril Fatface',
+    fontsourcePackage: '@fontsource/abril-fatface',
+    fileName: 'abril-fatface-latin-400-normal.woff2',
+    weight: 400,
+  },
+  'monoton': {
+    family: 'Monoton',
+    fontsourcePackage: '@fontsource/monoton',
+    fileName: 'monoton-latin-400-normal.woff2',
+    weight: 400,
+  },
+  'yeseva-one': {
+    family: 'Yeseva One',
+    fontsourcePackage: '@fontsource/yeseva-one',
+    fileName: 'yeseva-one-latin-400-normal.woff2',
+    weight: 400,
+  },
+  'alfa-slab-one': {
+    family: 'Alfa Slab One',
+    fontsourcePackage: '@fontsource/alfa-slab-one',
+    fileName: 'alfa-slab-one-latin-400-normal.woff2',
+    weight: 400,
+  },
+  'caveat': {
+    family: 'Caveat',
+    fontsourcePackage: '@fontsource/caveat',
+    fileName: 'caveat-latin-700-normal.woff2',
+    weight: 700,
+  },
+  'pinyon-script': {
+    family: 'Pinyon Script',
+    fontsourcePackage: '@fontsource/pinyon-script',
+    fileName: 'pinyon-script-latin-400-normal.woff2',
+    weight: 400,
+  },
+  'rubik-mono-one': {
+    family: 'Rubik Mono One',
+    fontsourcePackage: '@fontsource/rubik-mono-one',
+    fileName: 'rubik-mono-one-latin-400-normal.woff2',
+    weight: 400,
+  },
+  'passion-one': {
+    family: 'Passion One',
+    fontsourcePackage: '@fontsource/passion-one',
+    fileName: 'passion-one-latin-900-normal.woff2',
+    weight: 900,
+  },
+  'sacramento': {
+    family: 'Sacramento',
+    fontsourcePackage: '@fontsource/sacramento',
+    fileName: 'sacramento-latin-400-normal.woff2',
+    weight: 400,
+  },
+
 };
 
 type LoadedFont = {

@@ -88,7 +88,7 @@ export async function regenerateClip(clipId: string) {
   await supabase.from('clip_pipeline_stages')
       .delete()
       .eq('clip_id', clipId)
-      .in('stage', ['template_selection', 'subject_cutouts', 'render_variant_1', 'render_variant_2', 'render_variant_3']);
+      .in('stage', ['template_selection', 'subject_cutouts', 'render_variant_1', 'render_variant_2', 'render_variant_3', 'render_variant_4', 'render_variant_5', 'render_variant_6']);
   await supabase
     .from('clips')
     .update({ status: 'uploaded', status_message: 'Regenerating...' })

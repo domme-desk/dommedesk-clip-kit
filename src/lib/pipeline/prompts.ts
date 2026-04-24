@@ -554,13 +554,13 @@ Accent brand color: ${accent}
 AVAILABLE TEMPLATES:
 ${templatesForClaude()}
 
-TASK: Select 3 DIFFERENT templates for this clip (one per variant) and define the text + palette for each.
+TASK: Select 6 DIFFERENT templates for this clip (one per variant) and define the text + palette for each.
 
 RULES:
 
 1. **Three DIFFERENT templates, covering DIFFERENT layout types.**
    Available layout types: single, mirror, triple-diff, split-diff.
-   Your three picks must include AT LEAST 2 distinct layout types (e.g., 1 single + 1 mirror + 1 triple-diff; or 1 single + 2 mirrors with different templates). Three 'single' templates is NOT acceptable.
+   Your six picks must include AT LEAST 3 distinct layout types. At minimum: 2 single + 1 mirror + 1 triple-diff + 2 any. Six 'single' templates is NOT acceptable.
 
 2. **Text is the clip TITLE, styled per template.**
    - Primary text (text_primary) = the clip's title, normalized:

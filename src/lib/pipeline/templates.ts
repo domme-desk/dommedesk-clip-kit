@@ -17,7 +17,12 @@ export type TemplateId =
   | 'crossed-layered'
   | 'cute-bubble'
   | 'hypno-spiral'
-  | 'neon-glow';
+  | 'neon-glow'
+  | 'glam-serif'
+  | 'disco-retro'
+  | 'script-overlay'
+  | 'slab-menace'
+  | 'handwritten-casual';
 
 export type LayoutType = 'single' | 'mirror' | 'triple-diff' | 'split-diff';
 
@@ -214,6 +219,85 @@ export const TEMPLATES: Record<TemplateId, TemplateSpec> = {
     supports_secondary_text: false,
     claude_guidance: 'Moody late-night vibe. Use when description tone is intimate/quiet/slow.',
   },
+  'glam-serif': {
+    id: 'glam-serif',
+    name: 'Glam Serif',
+    feel: 'high-end editorial, feminine luxury',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'abril-fatface',
+    secondary_font: 'playfair-display-italic',
+    background: 'environmental-bokeh',
+    text_effect: 'elegant-drop-shadow',
+    default_palette: ['#FFFFFF', '#000000', '#FF1493', '#2D0A3D'],
+    best_for_tags: ['luxury', 'glamour', 'editorial', 'lingerie', 'findom', 'goddess'],
+    text_primary_max_words: 4,
+    supports_secondary_text: true,
+    claude_guidance: 'Editorial luxury look. Thick italic serif primary. For lingerie reveals or goddess/femdom luxury branding.',
+  },
+  'disco-retro': {
+    id: 'disco-retro',
+    name: 'Disco Retro',
+    feel: 'retro 70s/80s, glamorous vintage',
+    layout: 'mirror',
+    frames_needed: 1,
+    primary_font: 'monoton',
+    background: 'gradient',
+    text_effect: 'layered-multi',
+    default_palette: ['#FFD700', '#FF1493', '#2D0A3D', '#9D4EDD'],
+    best_for_tags: ['disco', 'retro', 'party', 'vintage', 'nostalgia', 'showgirl'],
+    text_primary_max_words: 3,
+    supports_secondary_text: false,
+    claude_guidance: 'Monoton vertical-stripe font with retro gradient. Best for playful vintage-vibe clips.',
+  },
+  'script-overlay': {
+    id: 'script-overlay',
+    name: 'Script Overlay',
+    feel: 'layered emotional, sensual cascade',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'bowlby-one',
+    secondary_font: 'pinyon-script',
+    background: 'dark-moody-bokeh',
+    text_effect: 'neon-glow',
+    default_palette: ['#FFFFFF', '#000000', '#FF1493', '#9D4EDD'],
+    best_for_tags: ['emotional', 'sensual', 'tease', 'worship', 'orgasm', 'ruined'],
+    text_primary_max_words: 3,
+    supports_secondary_text: true,
+    claude_guidance: 'Chunky primary with flowing script accent underneath. Sensual emotional clips.',
+  },
+  'slab-menace': {
+    id: 'slab-menace',
+    name: 'Slab Menace',
+    feel: 'aggressive, threatening, dominant',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'alfa-slab-one',
+    background: 'dark-texture',
+    text_effect: 'heavy-outline-shadow',
+    default_palette: ['#FFEB3B', '#000000', '#E63946', '#1A0000'],
+    best_for_tags: ['punishment', 'threat', 'degradation', 'harsh', 'findom', 'mean'],
+    text_primary_max_words: 4,
+    supports_secondary_text: false,
+    claude_guidance: 'Heavy slab serif on dark aggressive bg. For mean/harsh/punishment clips. Yellow text on red-black pops.',
+  },
+  'handwritten-casual': {
+    id: 'handwritten-casual',
+    name: 'Handwritten Casual',
+    feel: 'intimate, personal, friendly-teasing',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'caveat',
+    secondary_font: 'sacramento',
+    background: 'pastel-bright',
+    text_effect: 'clean-outline',
+    default_palette: ['#FFFFFF', '#FF1493', '#FFB3D9', '#FF69B4'],
+    best_for_tags: ['intimate', 'personal', 'friendly', 'girlfriend', 'playful', 'brat'],
+    text_primary_max_words: 5,
+    supports_secondary_text: true,
+    claude_guidance: 'Casual handwritten feel. Like a personal note. Best for GFE / playful / intimate tease clips.',
+  },
+
 };
 
 export function listTemplates(): TemplateSpec[] {
