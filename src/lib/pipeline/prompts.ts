@@ -62,7 +62,34 @@ BACKGROUND PROMPT RULES:
 // ---------------------------------------------------------------------------
 
 function stripJsonFences(text: string): string {
-  return text.trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  let s = text.trim();
+  // Remove code fences
+  s = s.replace(/^```(?:json)?\s*/g, '').replace(/\s*```$/g, '');
+  s = s.trim();
+
+  // Extract the first balanced JSON object { ... }
+  const start = s.indexOf('{');
+  if (start === -1) return s;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"' && !escape) { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        return s.substring(start, i + 1);
+      }
+    }
+  }
+  // Fallback: return from first { to end
+  return s.substring(start);
 }
 
 function clipContextString(clip: Pick<Clip, 'title' | 'description' | 'tags' | 'auto_description'>): string {
@@ -182,11 +209,40 @@ Creator: ${model.display_name}
 ${styleContext}
 
 TASK: Pick the top ${k} frames for thumbnails. What matters most:
+
+FOCAL ANATOMY — MOST IMPORTANT:
+The single most critical criterion is that the thumbnail FEATURES WHAT THE CLIP IS SELLING. The frame must put the kink's focal body part front-and-center. This is how professional thumbnails convert browsers into buyers.
+
+Use this mapping based on the clip's tags/title to decide what the frame should feature:
+
+- **Ass worship / ass tease / twerking** → frame must prominently feature the ASS (rear view, bent over, ass-forward pose). Subject may or may not be looking back at camera.
+- **Foot worship / feet / soles** → frame must prominently feature the FEET (pointed toes, soles visible, heels off).
+- **Armpit worship** → frame must have an ARM RAISED showing the armpit.
+- **Breast worship / tits / cleavage** → frame must prominently feature the CLEAVAGE / chest.
+- **Thigh / leg worship / stockings** → frame must prominently feature the LEGS (usually in stockings or bare).
+- **Hand fetish / JOI** → frame must show HANDS (finger-wagging, countdown gestures, dominant hand pose).
+- **Ignore / turn-away / mocking** → frame should show subject NOT looking at camera (looking away, on her phone, turned aside).
+- **Findom / paypig / wallet drain** → commanding face + hand gestures toward camera (reaching for cash metaphor) or direct confrontational pose.
+- **Chastity / lock-up** → subject in commanding pose, looking directly at camera with authoritative expression (the VIEWER is the one locked, she's telling them).
+- **Hypno / mesmerize / goon** → direct eye contact, front-facing, hypnotic pose.
+- **Tease / flirt / seduction** → front-facing, playful or sultry expression, lingerie visible.
+- **Humiliation / SPH / loser tasks** → mocking facial expression (smirk, laugh, pointed finger), direct eye contact.
+
+DEFAULT (if no specific focal anatomy matches the tags): prefer frames with DIRECT EYE CONTACT and a commanding/sultry pose facing the camera. This is the baseline for professional domme thumbnails.
+
+Current clip tags: ${(clip.tags || []).join(', ') || 'none'}
+Current clip title: ${clip.title || '(untitled)'}
+
+Based on these tags and title, identify the focal anatomy/pose required, and prefer frames that deliver it.
+
+OTHER CRITERIA:
 - Full body or ¾ body visible (we want her BODY to be the centerpiece, not just her face)
-- Strong / sexy / commanding pose — not just close-up talking heads
-- Face expressive and visible
+- Strong / sexy / commanding pose — not just close-up talking heads  
+- Face expressive and clearly visible
 - Clothed but showing off — lingerie/fetish wear/low-cut/revealing outfit
 - DIVERSITY: ${k} frames at least ${minGap.toFixed(1)}s apart
+
+When scoring, heavily weight the eye contact criterion above all else (except diversity).
 
 Frame timestamps: ${JSON.stringify(frameUrls.map(f => f.timestamp))}
 
@@ -200,7 +256,7 @@ Return ONLY JSON:
 
   const response = await anthropic.messages.create({
     model: CLAUDE_MODEL,
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{ role: 'user', content }],
   });
 
@@ -208,7 +264,13 @@ Return ONLY JSON:
   if (!textBlock || textBlock.type !== 'text') throw new Error('No text response from Claude');
 
   const raw = stripJsonFences(textBlock.text);
-  const parsed = JSON.parse(raw) as { frames: ScoredFrame[] };
+  let parsed: { frames: ScoredFrame[] };
+  try {
+    parsed = JSON.parse(raw);
+  } catch (parseErr) {
+    console.error('[scoreFrames] JSON parse failed. Raw response was:', textBlock.text.substring(0, 500));
+    throw new Error(`scoreFrames JSON parse: ${parseErr instanceof Error ? parseErr.message : parseErr}`);
+  }
 
   const sorted = parsed.frames.sort((a, b) => b.score - a.score);
   const picked: ScoredFrame[] = [];
@@ -333,14 +395,22 @@ Return ONLY JSON:
 
   const response = await anthropic.messages.create({
     model: CLAUDE_MODEL,
-    max_tokens: 3072,
+    max_tokens: 6144,
     messages: [{ role: 'user', content }],
   });
 
   const textBlock = response.content.find((b) => b.type === 'text');
   if (!textBlock || textBlock.type !== 'text') throw new Error('No text response from Claude');
   const raw = stripJsonFences(textBlock.text);
-  const parsed = JSON.parse(raw) as { briefs: CompositionBrief[] };
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (parseErr) {
+    console.error('[prompts] JSON parse failed. Raw:', textBlock.text.substring(0, 500));
+    throw new Error(`JSON parse: ${parseErr instanceof Error ? parseErr.message : parseErr}`);
+  }
+  // @ts-ignore - runtime safety check
+  parsed = parsed as { briefs: CompositionBrief[] };
   return parsed.briefs;
 }
 
@@ -357,6 +427,80 @@ export type TemplateSelection = {
   frame_indices: number[]; // which of the scored frames (0,1,2) to use for this variant's subject cutouts
   reasoning: string;
 };
+
+
+
+// ---------------------------------------------------------------------------
+// Post-validation helpers for template selection
+// ---------------------------------------------------------------------------
+
+function normalizeTitle(title: string, maxWords: number = 5): string {
+  const cleaned = title.replace(/[.!?]+$/g, '').trim();
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length <= maxWords) return cleaned.toUpperCase();
+  // If too long, keep the first maxWords words
+  return words.slice(0, maxWords).join(' ').toUpperCase();
+}
+
+function hexLuminance(hex: string): number {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+  const r = parseInt(full.slice(0, 2), 16) / 255;
+  const g = parseInt(full.slice(2, 4), 16) / 255;
+  const b = parseInt(full.slice(4, 6), 16) / 255;
+  // Relative luminance per WCAG
+  const rs = r <= 0.03928 ? r / 12.92 : Math.pow((r + 0.055) / 1.055, 2.4);
+  const gs = g <= 0.03928 ? g / 12.92 : Math.pow((g + 0.055) / 1.055, 2.4);
+  const bs = b <= 0.03928 ? b / 12.92 : Math.pow((b + 0.055) / 1.055, 2.4);
+  return 0.2126 * rs + 0.7152 * gs + 0.0722 * bs;
+}
+
+function contrastRatio(hex1: string, hex2: string): number {
+  const l1 = hexLuminance(hex1);
+  const l2 = hexLuminance(hex2);
+  const lighter = Math.max(l1, l2);
+  const darker = Math.min(l1, l2);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function enforcePaletteContrast(palette: string[]): string[] {
+  // Palette order: [text_fill, text_outline, bg_primary, bg_accent]
+  const [textFill, textOutline, bgPrimary, bgAccent] = palette;
+
+  // Rule 1: text_outline should always be black (or very dark) — override if it's not
+  let outline = textOutline;
+  if (hexLuminance(textOutline) > 0.3) {
+    outline = '#000000';
+  }
+
+  // Rule 2: text_fill must have contrast > 3.0 against bg_primary. If not, force white.
+  let fill = textFill;
+  if (contrastRatio(textFill, bgPrimary) < 3.0) {
+    // Try white first
+    if (contrastRatio('#FFFFFF', bgPrimary) >= 3.0) {
+      fill = '#FFFFFF';
+    } else {
+      // Fallback to yellow
+      fill = '#FFEB3B';
+    }
+  }
+
+  return [fill, outline, bgPrimary, bgAccent];
+}
+
+function postProcessSelections(selections: TemplateSelection[]): TemplateSelection[] {
+  if (selections.length === 0) return selections;
+
+  // Enforce same text_primary across all variants (use variant 1's normalized version)
+  const canonicalText = normalizeTitle(selections[0].text_primary);
+
+  return selections.map((s) => ({
+    ...s,
+    text_primary: canonicalText,
+    text_secondary: null,  // title-only: never render a subtitle
+    palette: enforcePaletteContrast(s.palette),
+  }));
+}
 
 export async function selectTemplatesForClip(
   scoredFrames: { timestamp: number; url: string }[],
@@ -438,7 +582,7 @@ RULES:
 
 5. Reasoning: 1 sentence per variant explaining why this template+palette fits.
 
-Return ONLY valid JSON:
+Return ONLY valid JSON. Start with { and end with }. No prose, no explanation, no markdown code fences, no additional text before or after:
 
 {
   "selections": [
@@ -457,14 +601,22 @@ Return ONLY valid JSON:
 
   const response = await anthropic.messages.create({
     model: CLAUDE_MODEL,
-    max_tokens: 3072,
+    max_tokens: 6144,
     messages: [{ role: 'user', content }],
   });
 
   const textBlock = response.content.find((b) => b.type === 'text');
   if (!textBlock || textBlock.type !== 'text') throw new Error('No text from Claude');
   const raw = stripJsonFences(textBlock.text);
-  const parsed = JSON.parse(raw) as { selections: TemplateSelection[] };
-  return parsed.selections;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (parseErr) {
+    console.error('[prompts] JSON parse failed. Raw:', textBlock.text.substring(0, 500));
+    throw new Error(`JSON parse: ${parseErr instanceof Error ? parseErr.message : parseErr}`);
+  }
+  // @ts-ignore - runtime safety check
+  parsed = parsed as { selections: TemplateSelection[] };
+  return postProcessSelections(parsed.selections);
 }
 

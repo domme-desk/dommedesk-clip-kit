@@ -255,7 +255,7 @@ type TextPlacement = {
 function fitFontSize(text: string, maxWidthPx: number, startSizePx: number): number {
   const approxW = (size: number) => text.length * size * 0.58;
   let s = startSizePx;
-  while (approxW(s) > maxWidthPx && s > 20) s -= 2;
+  while (approxW(s) > maxWidthPx && s > 14) s -= 2;
   return s;
 }
 
@@ -430,13 +430,21 @@ async function positionedFrom(subject: Buffer, left: number, top: number, rimCol
 }
 
 async function layoutSingle(subject: Buffer, rimColor: string): Promise<PositionedSubject[]> {
-  const scaled = await sharp(subject).resize({ height: Math.round(CANVAS_H * 0.88), fit: 'inside' }).toBuffer();
+  // Scale subject to ~92% canvas height but ALSO cap width at ~50% canvas width so the left half is free for text
+  const scaled = await sharp(subject)
+    .resize({
+      height: Math.round(CANVAS_H * 0.92),
+      width: Math.round(CANVAS_W * 0.52),
+      fit: 'inside',
+    })
+    .toBuffer();
   const meta = await sharp(scaled).metadata();
   const w = meta.width || 0;
   const h = meta.height || 0;
-  const left = Math.max(0, Math.min(Math.round(CANVAS_W * 0.62 - w / 2), CANVAS_W - w));
-  // Leave 8% headroom at top so the head never clips on the upper edge
-  const top = Math.max(Math.round(CANVAS_H * 0.08), CANVAS_H - h);
+  // Anchor subject to the right third — her left edge sits around 52% of canvas width
+  const left = Math.round(CANVAS_W * 0.52);
+  // Leave 6% headroom at top so head never clips, anchor bottom to canvas bottom
+  const top = Math.max(Math.round(CANVAS_H * 0.06), CANVAS_H - h);
   return [await positionedFrom(scaled, left, top, rimColor, 0.55)];
 }
 
@@ -510,52 +518,105 @@ async function layoutSplitDiff(subjects: Buffer[], rimColor: string): Promise<Po
 function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number; top: number; right: number; bottom: number }[]): TextPlacement {
   const pad = Math.round(CANVAS_H * 0.06);
 
-  // Find vertical bands that don't overlap subject heads (top 40% of each subject)
-  const headZones = subjectBoxes.map((b) => ({ top: b.top, bottom: b.top + (b.bottom - b.top) * 0.45 }));
-  const bandClear = (top: number, bottom: number) => !headZones.some((hz) => hz.top < bottom && hz.bottom > top);
+  // A subject "occupies" roughly the top 75% of its bounding box (head + torso).
+  // Only the very top (head) is most important to avoid, but to be safe we treat the whole bbox as occupied.
+  const occupiedBands = subjectBoxes.map((b) => ({
+    top: b.top,
+    bottom: b.bottom,
+    left: b.left,
+    right: b.right,
+  }));
+
+  // Horizontal band conflict check: does any subject bbox occupy the vertical range [yTop, yBottom]
+  // AND overlap with the horizontal range [xLeft, xRight]?
+  const overlapsSubject = (yTop: number, yBottom: number, xLeft: number, xRight: number) => {
+    return occupiedBands.some((b) =>
+      b.top < yBottom && b.bottom > yTop && b.left < xRight && b.right > xLeft
+    );
+  };
+
+  // Find a SAFE text zone by checking candidate bands in order of preference
+  const textHeight = Math.round(CANVAS_H * 0.28); // estimated text height (matches 28% size)
+
+  // Candidate zones per layout, in priority order
+  type Candidate = { x: number; y: number; anchor: 'start' | 'middle' | 'end'; maxWidth: number; label: string };
+  let candidates: Candidate[] = [];
 
   switch (template.layout) {
-    case 'single': {
-      // Text on the left third, vertically centered-ish
-      const bandTop = CANVAS_H * 0.25;
-      const bandBottom = CANVAS_H * 0.70;
-      return {
-        x: Math.round(CANVAS_W * 0.05),
-        y: Math.round((bandTop + bandBottom) / 2),
-        anchor: 'start',
-        maxWidth: Math.round(CANVAS_W * 0.55),
-      };
-    }
-    case 'mirror': {
-      // Text centered between the two copies
-      return {
-        x: CANVAS_W / 2,
-        y: Math.round(CANVAS_H * 0.5),
-        anchor: 'middle',
-        maxWidth: Math.round(CANVAS_W * 0.45),
-      };
-    }
-    case 'triple-diff': {
-      // Text in top band (bands pretty much occupied by figures, so text goes high)
-      const topClear = bandClear(pad, pad + CANVAS_H * 0.3);
-      if (topClear) {
-        return { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.2), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.85) };
-      }
-      // Otherwise overlay at bottom center
-      return { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.85), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.75) };
-    }
-    case 'split-diff': {
-      // Text centered, overlaps both subjects — big and bold
-      return {
-        x: CANVAS_W / 2,
-        y: Math.round(CANVAS_H * 0.5),
-        anchor: 'middle',
-        maxWidth: Math.round(CANVAS_W * 0.75),
-      };
-    }
+    case 'single':
+      candidates = [
+        // Left half, vertically centered — subject is on right
+        { x: Math.round(CANVAS_W * 0.04), y: Math.round(CANVAS_H * 0.52), anchor: 'start', maxWidth: Math.round(CANVAS_W * 0.48), label: 'left-center' },
+        { x: Math.round(CANVAS_W * 0.04), y: Math.round(CANVAS_H * 0.38), anchor: 'start', maxWidth: Math.round(CANVAS_W * 0.48), label: 'left-upper' },
+        { x: Math.round(CANVAS_W * 0.04), y: Math.round(CANVAS_H * 0.75), anchor: 'start', maxWidth: Math.round(CANVAS_W * 0.48), label: 'left-lower' },
+      ];
+      break;
+
+    case 'mirror':
+      candidates = [
+        // Between the two subjects — check center channel is clear
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.5), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.38), label: 'mirror-center' },
+        // Top band — above both subjects' heads
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.14), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.88), label: 'mirror-top' },
+        // Bottom band — below the subjects (if they don't fill full height)
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.92), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.88), label: 'mirror-bottom' },
+      ];
+      break;
+
+    case 'triple-diff':
+      candidates = [
+        // Top band is safest when 3 figures fill bottom
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.14), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.88), label: 'triple-top' },
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.92), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.82), label: 'triple-bottom' },
+      ];
+      break;
+
+    case 'split-diff':
+      candidates = [
+        // Center channel if there's a gap between the two split subjects
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.5), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.35), label: 'split-center' },
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.92), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.75), label: 'split-bottom' },
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.14), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.75), label: 'split-top' },
+      ];
+      break;
+
     default:
-      return { x: CANVAS_W / 2, y: CANVAS_H - pad, anchor: 'middle', maxWidth: CANVAS_W - pad * 2 };
+      candidates = [
+        { x: CANVAS_W / 2, y: CANVAS_H - pad, anchor: 'middle', maxWidth: CANVAS_W - pad * 2, label: 'default-bottom' },
+      ];
   }
+
+  // Pick the first candidate whose text box doesn't overlap subjects' heads specifically.
+  // Head = top 45% of bbox. We only want to avoid OVERLAP WITH HEADS, not entire body,
+  // because mild body overlap can be OK in some layouts.
+  const headZones = subjectBoxes.map((b) => ({
+    top: b.top,
+    bottom: b.top + (b.bottom - b.top) * 0.45,
+    left: b.left,
+    right: b.right,
+  }));
+
+  const overlapsHead = (yTop: number, yBottom: number, xLeft: number, xRight: number) => {
+    return headZones.some((hz) =>
+      hz.top < yBottom && hz.bottom > yTop && hz.left < xRight && hz.right > xLeft
+    );
+  };
+
+  for (const c of candidates) {
+    // Estimate the bounding box of the text at this candidate position
+    const yTop = c.y - textHeight * 0.8;
+    const yBottom = c.y + textHeight * 0.2;
+    const xLeft = c.anchor === 'start' ? c.x : c.anchor === 'end' ? c.x - c.maxWidth : c.x - c.maxWidth / 2;
+    const xRight = xLeft + c.maxWidth;
+
+    if (!overlapsHead(yTop, yBottom, xLeft, xRight)) {
+      return { x: c.x, y: c.y, anchor: c.anchor, maxWidth: c.maxWidth };
+    }
+  }
+
+  // Fallback: use first candidate even if it overlaps
+  const fb = candidates[0];
+  return { x: fb.x, y: fb.y, anchor: fb.anchor, maxWidth: fb.maxWidth };
 }
 
 // ---------------------------------------------------------------------------
@@ -633,7 +694,8 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
   const textPlacement = pickTextPlacement(template, positioned.map(p => p.bbox));
   const textSvg = buildTextSvg({
     primaryText: input.text_primary,
-    secondaryText: template.supports_secondary_text ? (input.text_secondary || undefined) : undefined,
+    // Always suppress secondary text — title-only design rule
+    secondaryText: undefined,
     primaryFont: template.primary_font,
     secondaryFont: template.secondary_font,
     primaryColor: textFill,
