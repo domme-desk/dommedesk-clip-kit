@@ -105,9 +105,11 @@ async function subjectRimLight(subject: Buffer, colorHex: string, intensity: num
 // ---------------------------------------------------------------------------
 
 async function generateBackground(style: BackgroundStyle, palette: string[]): Promise<Buffer> {
-  const c1 = pickColor(palette, 0, '#FF1493');
-  const c2 = pickColor(palette, 1, '#9D4EDD');
-  const c3 = pickColor(palette, 2, '#000000');
+  // Palette convention from Claude: [text_fill, text_outline, bg_primary, bg_accent]
+  // Backgrounds use indices 2 and 3.
+  const c1 = pickColor(palette, 2, '#FF1493');
+  const c2 = pickColor(palette, 3, '#9D4EDD');
+  const c3 = pickColor(palette, 0, '#000000');  // fallback tertiary
 
   const W = CANVAS_W;
   const H = CANVAS_H;
@@ -274,12 +276,12 @@ function buildTextSvg(opts: {
   const {
     primaryText, secondaryText, primaryFont, secondaryFont,
     primaryColor, outlineColor, secondaryColor,
-    effect, placement, canvasW, canvasH, primaryRelativeSize = 0.22,
+    effect, placement, canvasW, canvasH, primaryRelativeSize = 0.28,
   } = opts;
 
   const targetPrimary = Math.round(canvasH * primaryRelativeSize);
   const primarySize = fitFontSize(primaryText, placement.maxWidth, targetPrimary);
-  const stroke = Math.max(4, Math.round(primarySize * 0.09));
+  const stroke = Math.max(6, Math.round(primarySize * 0.11));
   const secSize = secondaryText ? Math.round(primarySize * 0.42) : 0;
 
   const pFamily = getFontFamily(primaryFont);
@@ -428,17 +430,18 @@ async function positionedFrom(subject: Buffer, left: number, top: number, rimCol
 }
 
 async function layoutSingle(subject: Buffer, rimColor: string): Promise<PositionedSubject[]> {
-  const scaled = await sharp(subject).resize({ height: Math.round(CANVAS_H * 0.95), fit: 'inside' }).toBuffer();
+  const scaled = await sharp(subject).resize({ height: Math.round(CANVAS_H * 0.88), fit: 'inside' }).toBuffer();
   const meta = await sharp(scaled).metadata();
   const w = meta.width || 0;
   const h = meta.height || 0;
   const left = Math.max(0, Math.min(Math.round(CANVAS_W * 0.62 - w / 2), CANVAS_W - w));
-  const top = CANVAS_H - h;
+  // Leave 8% headroom at top so the head never clips on the upper edge
+  const top = Math.max(Math.round(CANVAS_H * 0.08), CANVAS_H - h);
   return [await positionedFrom(scaled, left, top, rimColor, 0.55)];
 }
 
 async function layoutMirror(subject: Buffer, rimColor: string): Promise<PositionedSubject[]> {
-  const target = await sharp(subject).resize({ height: Math.round(CANVAS_H * 0.92), fit: 'inside' }).toBuffer();
+  const target = await sharp(subject).resize({ height: Math.round(CANVAS_H * 0.85), fit: 'inside' }).toBuffer();
   const meta = await sharp(target).metadata();
   const w = meta.width || 0;
   const h = meta.height || 0;
@@ -612,7 +615,7 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
   const background = await sharp(backgroundBuf).modulate({ brightness: 0.92 }).toBuffer();
 
   // Layout subjects
-  const rimColor = pickColor(palette, 0, '#FF1493');
+  const rimColor = pickColor(palette, 3, '#FF1493');  // rim = bg_accent for cohesion
   let positioned: PositionedSubject[];
   switch (template.layout) {
     case 'single': positioned = await layoutSingle(preppedSubjects[0], rimColor); break;
@@ -622,6 +625,10 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
     default: positioned = await layoutSingle(preppedSubjects[0], rimColor);
   }
 
+  // Palette order (from Claude): [text_fill, text_outline, bg_primary, bg_accent]
+  const textFill = pickColor(palette, 0, '#FFFFFF');
+  const textOutline = pickColor(palette, 1, '#000000');
+
   // Build text
   const textPlacement = pickTextPlacement(template, positioned.map(p => p.bbox));
   const textSvg = buildTextSvg({
@@ -629,9 +636,9 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
     secondaryText: template.supports_secondary_text ? (input.text_secondary || undefined) : undefined,
     primaryFont: template.primary_font,
     secondaryFont: template.secondary_font,
-    primaryColor: pickColor(palette, 0, '#FFFFFF'),
-    outlineColor: pickColor(palette, 3, '#000000'),
-    secondaryColor: pickColor(palette, 1, '#FFFFFF'),
+    primaryColor: textFill,
+    outlineColor: textOutline,
+    secondaryColor: textFill,
     effect: template.text_effect,
     placement: textPlacement,
     canvasW: CANVAS_W,

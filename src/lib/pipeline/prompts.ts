@@ -410,15 +410,33 @@ Accent brand color: ${accent}
 AVAILABLE TEMPLATES:
 ${templatesForClaude()}
 
-TASK: Select 3 DIFFERENT templates for this clip (one per variant) and write the text content for each.
+TASK: Select 3 DIFFERENT templates for this clip (one per variant) and define the text + palette for each.
 
 RULES:
-1. Three DIFFERENT template_ids — no duplicates across variants
-2. Templates must fit the clip's tags/mood
-3. Pick frames thoughtfully: for templates needing multiple frames (triple-pose, split-photo), use DIFFERENT frame indices (0, 1, 2)
-4. Hook copy must be in the creator's voice (see examples above) — commanding and provocative, not generic empowerment
-5. Each variant's hook should hit a different angle (command / tease / consequence)
-6. Palette: 4 hex colors. Start with brand colors (${primary}, ${accent}), add 2 complementary colors from the template's suggested palette. Order: [primary, secondary, accent, outline-or-contrast]
+
+1. **Three DIFFERENT templates, covering DIFFERENT layout types.**
+   Available layout types: single, mirror, triple-diff, split-diff.
+   Your three picks must include AT LEAST 2 distinct layout types (e.g., 1 single + 1 mirror + 1 triple-diff; or 1 single + 2 mirrors with different templates). Three 'single' templates is NOT acceptable.
+
+2. **Text is the clip TITLE, styled per template.**
+   - Primary text (text_primary) = the clip's title, normalized:
+     * ALL CAPS
+     * If title > 5 words, shorten to a punchy 2-5 word version that keeps the core concept
+       (e.g. 'A Task for Chastity Slave' → 'CHASTITY TASK' or 'LOCKED & OBEDIENT')
+     * Otherwise use the title as-is in ALL CAPS
+   - Same punchy title across all 3 variants — styling differs, meaning stays consistent
+   - text_secondary: optional short accent word (1-3 words) if template supports it, else null. Examples: 'Obey.', 'For Me.', 'Forever.'
+
+3. **Frames:** for templates needing multiple frames (triple-diff, split-diff), use DIFFERENT frame indices (0, 1, 2).
+
+4. **Palette — MUST POP.**
+   - 4 hex colors in order: [text_fill, text_outline, bg_primary, bg_accent]
+   - text_fill: BRIGHT and high-contrast. White (#FFFFFF), hot pink (#FF1493), bright yellow (#FFEB3B), or cyan (#00F5FF). NEVER the same hue family as the background.
+   - text_outline: BLACK (#000000) 90% of the time. Rare exceptions: use a strong complementary dark like deep purple (#2D0A3D) only if background is black.
+   - bg_primary, bg_accent: brand colors (${primary}, ${accent}) or a specific color pair from the template's default_palette.
+   - Rule of thumb: text needs to be legible at 120px wide (YouTube thumbnail size). If the text color is similar to the background color, the thumbnail FAILS.
+
+5. Reasoning: 1 sentence per variant explaining why this template+palette fits.
 
 Return ONLY valid JSON:
 
@@ -429,7 +447,7 @@ Return ONLY valid JSON:
       "template_id": "<one of the template ids>",
       "text_primary": "<2-5 word hook>",
       "text_secondary": "<optional, or null>",
-      "palette": ["#hex", "#hex", "#hex", "#hex"],
+      "palette": ["#text_fill", "#text_outline", "#bg_primary", "#bg_accent"],
       "frame_indices": [<0|1|2>, ...],
       "reasoning": "<1 sentence why this template + copy fits this clip>"
     }
