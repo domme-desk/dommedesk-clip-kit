@@ -484,17 +484,25 @@ function enforcePaletteContrast(palette: string[], templateId?: string): string[
   // No muted/dark shades, no background-matched colors. Always something that screams.
   const PUNCHY_FILLS: Record<string, string> = {
     white: '#FFFFFF',
+    black: '#000000',
     yellow: '#FFEB3B',
+    'gold-yellow': '#FFC107',
+    orange: '#FF6B00',
+    red: '#FF1744',
+    crimson: '#DC143C',
     'hot-pink': '#FF1493',
+    magenta: '#FF00FF',
     cyan: '#00F5FF',
-    'lime-green': '#39FF14',
+    'electric-blue': '#1E90FF',
+    'royal-blue': '#3F51FF',
+    lime: '#39FF14',
+    'neon-green': '#00FF88',
+    'electric-purple': '#9D00FF',
   };
 
-  const isScriptTemplate = templateId && SCRIPT_PRIMARY_TEMPLATES.has(templateId);
+  const isScriptTemplate = !!(templateId && SCRIPT_PRIMARY_TEMPLATES.has(templateId));
   const minContrast = isScriptTemplate ? 5.0 : 3.5;
 
-  // Score every punchy color against the background and pick the best one
-  // that's at or above the minimum contrast threshold
   let bestFill = '#FFFFFF';
   let bestContrast = 0;
   for (const candidate of Object.values(PUNCHY_FILLS)) {
@@ -505,17 +513,16 @@ function enforcePaletteContrast(palette: string[], templateId?: string): string[
     }
   }
 
-  // If Claude's original choice IS in the allowlist AND has good contrast, prefer it
-  // (preserves Claude's creative intent when it's already a good color)
+  // Preserve Claude's choice if it's already a punchy color with good contrast
   const claudeFillUpper = (textFill || '').toUpperCase();
-  const allowed = Object.values(PUNCHY_FILLS).map(c => c.toUpperCase());
+  const allowed = Object.values(PUNCHY_FILLS).map((c) => c.toUpperCase());
   if (allowed.includes(claudeFillUpper) && contrastRatio(textFill, bgPrimary) >= minContrast) {
     bestFill = textFill;
   }
 
-  // Outline: ALWAYS BLACK. Period. No exceptions.
-  // This is the non-negotiable rule from your reference thumbnails.
-  const outline = '#000000';
+  // Outline: black for everything EXCEPT black fills, which get white outline.
+  // This guarantees fill+outline always contrast, even when fill is black.
+  const outline = bestFill.toUpperCase() === '#000000' ? '#FFFFFF' : '#000000';
 
   return [bestFill, outline, bgPrimary, bgAccent];
 }
