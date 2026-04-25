@@ -24,9 +24,7 @@ export async function createModel(formData: FormData) {
   });
 
   if (!parsed.success) {
-    return {
-      error: parsed.error.issues.map((i) => i.message).join(', '),
-    };
+    throw new Error(parsed.error.issues.map((i) => i.message).join(', '));
   }
 
   const supabase = createAdminClient();
@@ -44,7 +42,7 @@ export async function createModel(formData: FormData) {
 
   if (error) {
     console.error('[createModel] Supabase error:', error);
-    return { error: error.message };
+    throw new Error(error.message);
   }
 
   revalidatePath('/models');
@@ -85,7 +83,7 @@ export async function updateBrandKit(formData: FormData) {
   });
 
   if (!parsed.success) {
-    return { error: parsed.error.issues.map((i) => i.message).join(', ') };
+    throw new Error(parsed.error.issues.map((i) => i.message).join(', '));
   }
 
   const d = parsed.data;
@@ -120,14 +118,14 @@ export async function updateBrandKit(formData: FormData) {
   if (logoFile && logoFile.size > 0) {
     const path = `models/${d.id}/logo-${Date.now()}-${logoFile.name}`;
     const result = await uploadFile(path, logoFile, logoFile.type);
-    if ('error' in result) return { error: `Logo upload failed: ${result.error}` };
+    if ('error' in result) throw new Error(`Logo upload failed: ${result.error}`);
     updates.logo_url = result.url;
   }
 
   if (watermarkFile && watermarkFile.size > 0) {
     const path = `models/${d.id}/watermark-${Date.now()}-${watermarkFile.name}`;
     const result = await uploadFile(path, watermarkFile, watermarkFile.type);
-    if ('error' in result) return { error: `Watermark upload failed: ${result.error}` };
+    if ('error' in result) throw new Error(`Watermark upload failed: ${result.error}`);
     updates.watermark_url = result.url;
   }
 
@@ -136,7 +134,7 @@ export async function updateBrandKit(formData: FormData) {
 
   if (error) {
     console.error('[updateBrandKit] Supabase error:', error);
-    return { error: error.message };
+    throw new Error(error.message);
   }
 
   revalidatePath(`/models/${d.id}`);

@@ -29,7 +29,7 @@ export default async function EditModelPage({ params }: Props) {
       <h1 className="text-3xl font-bold">Edit Brand Kit</h1>
       <p className="mt-1 text-sm text-neutral-500">{model.display_name}</p>
 
-      <form action={async (fd) => { await updateBrandKit(fd); }} encType="multipart/form-data" className="mt-8 space-y-8">
+      <form action={updateBrandKit} encType="multipart/form-data" className="mt-8 space-y-8">
         <input type="hidden" name="id" value={model.id} />
 
         {/* BASIC */}

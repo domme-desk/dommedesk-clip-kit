@@ -110,6 +110,174 @@ async function subjectRimLight(subject: Buffer, colorHex: string, intensity: num
   return sharp(colored).joinChannel(edge).png().toBuffer();
 }
 
+async function prepSubject(raw: Buffer): Promise<Buffer> {
+  const trimmed = await sharp(raw).trim({ threshold: 1 }).toBuffer();
+  const meta = await sharp(trimmed).metadata();
+  if (!meta.hasAlpha) return trimmed;
+  const alpha = await sharp(trimmed).extractChannel('alpha').blur(2.2).toBuffer();
+  const rgb = await sharp(trimmed).removeAlpha().toBuffer();
+  return sharp(rgb).joinChannel(alpha).toBuffer();
+}
+
+async function generateBackgroundThematic(
+  fluxPrompt: string,
+  style: BackgroundStyle,
+  palette: string[]
+): Promise<Buffer> {
+  // Try Flux first. On any error (NSFW, timeout, etc), fall back silently.
+  try {
+    const { generateBackground: fluxGenerate } = await import('@/lib/replicate');
+    // Reinforce the content-safety guardrails in the prompt itself
+    const safePrompt = `${fluxPrompt}. Photography, no people, no text, no watermarks. Cinematic lighting, atmospheric, high-end aesthetic.`;
+    const fluxUrl = await fluxGenerate(safePrompt, '16:9');
+    const res = await fetch(fluxUrl);
+    if (!res.ok) throw new Error(`Flux result fetch failed: ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    // Resize to canvas dimensions in case Flux returned non-exact size
+    return sharp(buf).resize(CANVAS_W, CANVAS_H, { fit: 'cover', position: 'center' }).png().toBuffer();
+  } catch (err) {
+    console.warn('[template-renderer] Flux background failed, falling back to algorithmic:', err instanceof Error ? err.message : err);
+    return generateBackgroundAlgorithmic(style, palette);
+  }
+}
+
+async function generateBackgroundAlgorithmic(style: BackgroundStyle, palette: string[]): Promise<Buffer> {
+  // Palette convention from Claude: [text_fill, text_outline, bg_primary, bg_accent]
+  // Backgrounds use indices 2 and 3.
+  const c1 = pickColor(palette, 2, '#FF1493');
+  const c2 = pickColor(palette, 3, '#9D4EDD');
+  const c3 = pickColor(palette, 0, '#000000');  // fallback tertiary
+
+  const W = CANVAS_W;
+  const H = CANVAS_H;
+
+  let svg = '';
+
+  switch (style) {
+    case 'flat-saturated':
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="${c1}"/></svg>`;
+      break;
+
+    case 'gradient':
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/>
+        </linearGradient></defs>
+        <rect width="${W}" height="${H}" fill="url(#g)"/>
+      </svg>`;
+      break;
+
+    case 'dark-moody-bokeh': {
+      // Dark background with soft colored circles (bokeh)
+      const circles = [];
+      for (let i = 0; i < 14; i++) {
+        const cx = Math.random() * W;
+        const cy = Math.random() * H;
+        const r = 30 + Math.random() * 80;
+        const color = Math.random() > 0.5 ? c1 : c2;
+        const op = 0.15 + Math.random() * 0.25;
+        circles.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" opacity="${op}"/>`);
+      }
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><radialGradient id="bg" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="${c2}" stop-opacity="0.4"/>
+          <stop offset="100%" stop-color="#0A0510"/>
+        </radialGradient><filter id="blur"><feGaussianBlur stdDeviation="20"/></filter></defs>
+        <rect width="${W}" height="${H}" fill="url(#bg)"/>
+        <g filter="url(#blur)">${circles.join('')}</g>
+      </svg>`;
+      break;
+    }
+
+    case 'bright-abstract':
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><radialGradient id="ba" cx="50%" cy="50%" r="80%">
+          <stop offset="0%" stop-color="${c3 || '#FFD700'}"/>
+          <stop offset="50%" stop-color="${c1}"/>
+          <stop offset="100%" stop-color="${c2}"/>
+        </radialGradient></defs>
+        <rect width="${W}" height="${H}" fill="url(#ba)"/>
+      </svg>`;
+      break;
+
+    case 'spiral-radial': {
+      // Concentric circles creating spiral/hypno effect
+      const rings = [];
+      for (let i = 0; i < 12; i++) {
+        const rad = (i + 1) * 80;
+        const color = i % 2 === 0 ? c1 : (c3 || '#000000');
+        const op = 0.7 - i * 0.04;
+        rings.push(`<circle cx="${W/2}" cy="${H/2}" r="${rad}" fill="none" stroke="${color}" stroke-width="40" opacity="${op}"/>`);
+      }
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <rect width="${W}" height="${H}" fill="${c2}"/>
+        ${rings.join('')}
+      </svg>`;
+      break;
+    }
+
+    case 'environmental-bokeh':
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="eb" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#2D1B3D"/>
+          <stop offset="60%" stop-color="${c1}" stop-opacity="0.6"/>
+          <stop offset="100%" stop-color="#1A0E25"/>
+        </linearGradient><filter id="b"><feGaussianBlur stdDeviation="40"/></filter></defs>
+        <rect width="${W}" height="${H}" fill="url(#eb)"/>
+        <g filter="url(#b)" opacity="0.7">
+          <circle cx="200" cy="180" r="120" fill="${c1}"/>
+          <circle cx="1050" cy="500" r="160" fill="${c2}"/>
+          <circle cx="640" cy="300" r="100" fill="${c3 || '#FFD700'}"/>
+        </g>
+      </svg>`;
+      break;
+
+    case 'dark-texture':
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><radialGradient id="dt" cx="50%" cy="50%" r="80%">
+          <stop offset="0%" stop-color="${c1}" stop-opacity="0.5"/>
+          <stop offset="100%" stop-color="#050008"/>
+        </radialGradient></defs>
+        <rect width="${W}" height="${H}" fill="url(#dt)"/>
+      </svg>`;
+      break;
+
+    case 'pastel-bright':
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="pb" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#FFE5F1"/>
+          <stop offset="100%" stop-color="${c1}"/>
+        </linearGradient></defs>
+        <rect width="${W}" height="${H}" fill="url(#pb)"/>
+      </svg>`;
+      break;
+
+    case 'deep-neon': {
+      const gridLines = [];
+      for (let i = 0; i < 10; i++) {
+        const y = H - i * 40 - 100;
+        const op = 0.3 - i * 0.02;
+        gridLines.push(`<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="${c1}" stroke-width="1" opacity="${op}"/>`);
+      }
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="dn" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#0A0012"/>
+          <stop offset="70%" stop-color="${c2}" stop-opacity="0.5"/>
+          <stop offset="100%" stop-color="${c1}"/>
+        </linearGradient></defs>
+        <rect width="${W}" height="${H}" fill="url(#dn)"/>
+        ${gridLines.join('')}
+      </svg>`;
+      break;
+    }
+
+    default:
+      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="${c1}"/></svg>`;
+  }
+
+  return await sharp(Buffer.from(svg)).png().toBuffer();
+}
+
 
 // ---------------------------------------------------------------------------
 // SVG -> PNG using resvg (with bundled fonts)

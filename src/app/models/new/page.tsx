@@ -18,7 +18,7 @@ export default function NewModelPage() {
         Create a creator profile. You can add brand assets and style examples after.
       </p>
 
-      <form action={async (fd) => { await createModel(fd); }} className="mt-8 space-y-6">
+      <form action={createModel} className="mt-8 space-y-6">
         <div>
           <label htmlFor="display_name" className="mb-1 block text-sm font-medium">
             Display Name
