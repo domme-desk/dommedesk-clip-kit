@@ -1,3 +1,5 @@
+import * as path from 'path';
+import * as fs from 'fs';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
@@ -45,121 +47,121 @@ const FONT_SPECS: Record<FontKey, FontSpec> = {
   'anton': {
     family: 'Anton',
     fontsourcePackage: '@fontsource/anton',
-    fileName: 'anton-latin-400-normal.woff2',
+    fileName: 'Anton-Regular.ttf',
     weight: 400,
   },
   'bebas-neue': {
     family: 'Bebas Neue',
     fontsourcePackage: '@fontsource/bebas-neue',
-    fileName: 'bebas-neue-latin-400-normal.woff2',
+    fileName: 'BebasNeue-Regular.ttf',
     weight: 400,
   },
   'montserrat-black': {
     family: 'Montserrat',
     fontsourcePackage: '@fontsource/montserrat',
-    fileName: 'montserrat-latin-900-normal.woff2',
+    fileName: 'Montserrat-Black.ttf',
     weight: 900,
   },
   'bowlby-one': {
     family: 'Bowlby One',
     fontsourcePackage: '@fontsource/bowlby-one',
-    fileName: 'bowlby-one-latin-400-normal.woff2',
+    fileName: 'BowlbyOne-Regular.ttf',
     weight: 400,
   },
   'fredoka-one': {
     family: 'Fredoka One',
     fontsourcePackage: '@fontsource/fredoka-one',
-    fileName: 'fredoka-one-latin-400-normal.woff2',
+    fileName: 'FredokaOne-Regular.ttf',
     weight: 400,
   },
   'dancing-script': {
     family: 'Dancing Script',
     fontsourcePackage: '@fontsource/dancing-script',
-    fileName: 'dancing-script-latin-700-normal.woff2',
+    fileName: 'DancingScript-Regular.ttf',
     weight: 700,
   },
   'pacifico': {
     family: 'Pacifico',
     fontsourcePackage: '@fontsource/pacifico',
-    fileName: 'pacifico-latin-400-normal.woff2',
+    fileName: 'Pacifico-Regular.ttf',
     weight: 400,
   },
   'playfair-display-black': {
     family: 'Playfair Display',
     fontsourcePackage: '@fontsource/playfair-display',
-    fileName: 'playfair-display-latin-900-normal.woff2',
+    fileName: 'PlayfairDisplay-Black.ttf',
     weight: 900,
   },
   'orbitron': {
     family: 'Orbitron',
     fontsourcePackage: '@fontsource/orbitron',
-    fileName: 'orbitron-latin-900-normal.woff2',
+    fileName: 'Orbitron-Black.ttf',
     weight: 900,
   },
   'permanent-marker': {
     family: 'Permanent Marker',
     fontsourcePackage: '@fontsource/permanent-marker',
-    fileName: 'permanent-marker-latin-400-normal.woff2',
+    fileName: 'PermanentMarker-Regular.ttf',
     weight: 400,
   },
   'playfair-display-italic': {
     family: 'Playfair Display',
     fontsourcePackage: '@fontsource/playfair-display',
-    fileName: 'playfair-display-latin-900-italic.woff2',
+    fileName: 'PlayfairDisplay-BlackItalic.ttf',
     weight: 900,
   },
   'abril-fatface': {
     family: 'Abril Fatface',
     fontsourcePackage: '@fontsource/abril-fatface',
-    fileName: 'abril-fatface-latin-400-normal.woff2',
+    fileName: 'AbrilFatface-Regular.ttf',
     weight: 400,
   },
   'monoton': {
     family: 'Monoton',
     fontsourcePackage: '@fontsource/monoton',
-    fileName: 'monoton-latin-400-normal.woff2',
+    fileName: 'Monoton-Regular.ttf',
     weight: 400,
   },
   'yeseva-one': {
     family: 'Yeseva One',
     fontsourcePackage: '@fontsource/yeseva-one',
-    fileName: 'yeseva-one-latin-400-normal.woff2',
+    fileName: 'YesevaOne-Regular.ttf',
     weight: 400,
   },
   'alfa-slab-one': {
     family: 'Alfa Slab One',
     fontsourcePackage: '@fontsource/alfa-slab-one',
-    fileName: 'alfa-slab-one-latin-400-normal.woff2',
+    fileName: 'AlfaSlabOne-Regular.ttf',
     weight: 400,
   },
   'caveat': {
     family: 'Caveat',
     fontsourcePackage: '@fontsource/caveat',
-    fileName: 'caveat-latin-700-normal.woff2',
+    fileName: 'Caveat-Bold.ttf',
     weight: 700,
   },
   'pinyon-script': {
     family: 'Pinyon Script',
     fontsourcePackage: '@fontsource/pinyon-script',
-    fileName: 'pinyon-script-latin-400-normal.woff2',
+    fileName: 'PinyonScript-Regular.ttf',
     weight: 400,
   },
   'rubik-mono-one': {
     family: 'Rubik Mono One',
     fontsourcePackage: '@fontsource/rubik-mono-one',
-    fileName: 'rubik-mono-one-latin-400-normal.woff2',
+    fileName: 'RubikMonoOne-Regular.ttf',
     weight: 400,
   },
   'passion-one': {
     family: 'Passion One',
     fontsourcePackage: '@fontsource/passion-one',
-    fileName: 'passion-one-latin-900-normal.woff2',
+    fileName: 'PassionOne-Black.ttf',
     weight: 900,
   },
   'sacramento': {
     family: 'Sacramento',
     fontsourcePackage: '@fontsource/sacramento',
-    fileName: 'sacramento-latin-400-normal.woff2',
+    fileName: 'Sacramento-Regular.ttf',
     weight: 400,
   },
 
@@ -174,7 +176,17 @@ type LoadedFont = {
 
 let fontsCache: LoadedFont[] | null = null;
 
+const LOCAL_FONTS_DIR = path.join(process.cwd(), 'src/assets/fonts');
+
 function resolveFontPath(spec: FontSpec): string | null {
+  // Use local TTF files (Resvg requires TTF/OTF, not woff2)
+  const localPath = path.join(LOCAL_FONTS_DIR, spec.fileName);
+  if (fs.existsSync(localPath)) return localPath;
+  console.warn(`[fonts] Local font not found: ${localPath}`);
+  return null;
+}
+
+function _legacyResolveFontPath(spec: FontSpec): string | null {
   // Try .woff2 first (modern), fall back to .ttf
   const candidates = [
     join(process.cwd(), 'node_modules', spec.fontsourcePackage, 'files', spec.fileName),
