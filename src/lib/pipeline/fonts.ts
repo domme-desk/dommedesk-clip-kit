@@ -172,6 +172,7 @@ type LoadedFont = {
   family: string;
   weight: number;
   buffer: Buffer;
+  path: string;
 };
 
 let fontsCache: LoadedFont[] | null = null;
@@ -211,6 +212,7 @@ export function loadAllFonts(): LoadedFont[] {
       continue;
     }
     loaded.push({
+      path,
       key,
       family: spec.family,
       weight: spec.weight,

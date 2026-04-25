@@ -1,3 +1,4 @@
+import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
 import sharp from 'sharp';
 import { Resvg } from '@resvg/resvg-js';
 import { loadAllFonts, getFontFamily, type FontKey } from './fonts';
@@ -8,6 +9,30 @@ import { TEMPLATES, type TemplateId, type TemplateSpec, type BackgroundStyle, ty
 // ---------------------------------------------------------------------------
 
 export const CANVAS_W = 1280;
+
+// ---------------------------------------------------------------------------
+// Register fonts globally with @napi-rs/canvas (once, on module load)
+// Resvg-js does not properly render TTF font variations; canvas does.
+// ---------------------------------------------------------------------------
+let _fontsRegistered = false;
+function ensureFontsRegistered(): void {
+  if (_fontsRegistered) return;
+  const fonts = loadAllFonts();
+  for (const f of fonts) {
+    // f.path is set by fonts.ts; if not, derive from spec
+    const fontPath = (f as any).path;
+    if (fontPath) {
+      try {
+        GlobalFonts.registerFromPath(fontPath, f.family);
+      } catch (e) {
+        console.warn(`[canvas] Failed to register font ${f.family} from ${fontPath}:`, e);
+      }
+    }
+  }
+  _fontsRegistered = true;
+}
+
+
 export const CANVAS_H = 720;
 
 // ---------------------------------------------------------------------------
@@ -66,6 +91,158 @@ function renderSvgToPng(svg: string, width: number, height: number): Buffer {
   });
   return resvg.render().asPng();
 }
+
+// ---------------------------------------------------------------------------
+// Canvas-based text renderer (replaces Resvg for text — Resvg can't render
+// non-Anton fonts correctly even with valid TTF buffers loaded)
+// ---------------------------------------------------------------------------
+
+function renderTextWithCanvas(opts: {
+  primaryText: string;
+  primaryFont: FontKey;
+  primaryColor: string;
+  outlineColor: string;
+  effect: TextEffect;
+  placement: TextPlacement;
+  canvasW: number;
+  canvasH: number;
+  primaryRelativeSize?: number;
+}): Buffer {
+  ensureFontsRegistered();
+
+  const {
+    primaryText, primaryFont, primaryColor, outlineColor,
+    effect, placement, canvasW, canvasH, primaryRelativeSize = 0.28,
+  } = opts;
+
+  const targetSize = Math.round(canvasH * primaryRelativeSize);
+  // Find a font size that fits within maxWidth — measure with canvas
+  const measureCanvas = createCanvas(1, 1);
+  const measureCtx = measureCanvas.getContext('2d');
+  const family = getFontFamily(primaryFont);
+
+  let fontSize = targetSize;
+  while (fontSize > 14) {
+    measureCtx.font = `${fontSize}px "${family}"`;
+    const metrics = measureCtx.measureText(primaryText);
+    if (metrics.width <= placement.maxWidth) break;
+    fontSize -= 2;
+  }
+
+  const stroke = Math.max(6, Math.round(fontSize * 0.11));
+
+  const canvas = createCanvas(canvasW, canvasH);
+  const ctx = canvas.getContext('2d');
+
+  ctx.font = `${fontSize}px "${family}"`;
+  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = placement.anchor === 'start' ? 'left' : placement.anchor === 'end' ? 'right' : 'center';
+
+  // Apply effect
+  switch (effect) {
+    case 'heavy-outline-shadow': {
+      // Heavy outline + drop shadow
+      ctx.shadowColor = 'rgba(0,0,0,0.9)';
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetY = 8;
+      ctx.lineWidth = stroke;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = outlineColor;
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.shadowColor = 'transparent';
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'neon-glow': {
+      // Outer glow then sharp text
+      ctx.shadowColor = primaryColor;
+      ctx.shadowBlur = 30;
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      ctx.shadowBlur = 12;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      ctx.shadowBlur = 0;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'clean-outline': {
+      ctx.lineWidth = stroke;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = outlineColor;
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'layered-multi': {
+      // Offset layers in 3 colors for retro feel
+      ctx.fillStyle = '#000000';
+      ctx.fillText(primaryText, placement.x + 6, placement.y + 6);
+      ctx.fillStyle = outlineColor;
+      ctx.fillText(primaryText, placement.x + 3, placement.y + 3);
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'elegant-drop-shadow': {
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 10;
+      ctx.shadowOffsetY = 4;
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'bubble-thick-rounded': {
+      ctx.lineWidth = stroke * 1.5;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = outlineColor;
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.lineWidth = stroke * 0.6;
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'chromatic-aberration': {
+      // Cyan + Magenta offsets, then white center
+      ctx.fillStyle = '#00F5FF';
+      ctx.fillText(primaryText, placement.x - 4, placement.y);
+      ctx.fillStyle = '#FF1493';
+      ctx.fillText(primaryText, placement.x + 4, placement.y);
+      ctx.lineWidth = stroke * 0.6;
+      ctx.strokeStyle = outlineColor;
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    case 'glow-transparent': {
+      ctx.shadowColor = primaryColor;
+      ctx.shadowBlur = 24;
+      ctx.lineWidth = stroke * 0.8;
+      ctx.strokeStyle = primaryColor;
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(255,255,255,0.95)';
+      ctx.fillText(primaryText, placement.x, placement.y);
+      break;
+    }
+    default: {
+      ctx.lineWidth = stroke;
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = outlineColor;
+      ctx.strokeText(primaryText, placement.x, placement.y);
+      ctx.fillStyle = primaryColor;
+      ctx.fillText(primaryText, placement.x, placement.y);
+    }
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
+
 
 // ---------------------------------------------------------------------------
 // Subject prep: tight crop + edge feather
@@ -719,23 +896,18 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
   const textFill = pickColor(palette, 0, '#FFFFFF');
   const textOutline = pickColor(palette, 1, '#000000');
 
-  // Build text
+  // Build text — using canvas (Resvg can't reliably render varied fonts)
   const textPlacement = pickTextPlacement(template, positioned.map(p => p.bbox));
-  const textSvg = buildTextSvg({
+  const textPng = renderTextWithCanvas({
     primaryText: input.text_primary,
-    // Always suppress secondary text — title-only design rule
-    secondaryText: undefined,
     primaryFont: template.primary_font,
-    secondaryFont: template.secondary_font,
     primaryColor: textFill,
     outlineColor: textOutline,
-    secondaryColor: textFill,
     effect: template.text_effect,
     placement: textPlacement,
     canvasW: CANVAS_W,
     canvasH: CANVAS_H,
   });
-  const textPng = renderSvgToPng(textSvg, CANVAS_W, CANVAS_H);
 
   // Compose
   const layers: sharp.OverlayOptions[] = [];
