@@ -80,9 +80,30 @@ export default async function ClipDetailPage({ params }: Props) {
         </div>
         {thumbnails.length === 0 ? (
           <EmptyThumbnails status={clip.status} />
-        ) : (
-          <ThumbnailsGrid thumbnails={thumbnails} />
-        )}
+        ) : (() => {
+          const runs = groupThumbnailsByRun(thumbnails);
+          const [latestRun, ...priorRuns] = runs;
+          return (
+            <>
+              <ThumbnailsGrid thumbnails={latestRun} />
+              {priorRuns.length > 0 && (
+                <div className="mt-8">
+                  <h3 className="mb-3 text-sm font-semibold text-neutral-600">Previous generations</h3>
+                  {priorRuns.map((run, i) => (
+                    <details key={i} className="mb-3 rounded-lg border border-neutral-200 p-3">
+                      <summary className="cursor-pointer text-xs text-neutral-600">
+                        Run from {formatRelativeTime(run[0].created_at)} ({run.length} variants)
+                      </summary>
+                      <div className="mt-3">
+                        <ThumbnailsGrid thumbnails={run} />
+                      </div>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </>
+          );
+        })()}
       </section>
 
       <section className="mt-8 rounded-lg border border-neutral-200 p-5">
@@ -135,7 +156,7 @@ function ThumbnailsGrid({ thumbnails }: { thumbnails: ThumbRow[] }) {
             <div className="p-3">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium">Variant {t.variant_index}</span>
-                <a href={t.image_url} download="thumbnail.png" className="text-xs text-neutral-500 underline hover:text-black">Download</a>
+                <a href={`/api/download/thumbnail/${t.id}`} className="text-xs text-neutral-500 underline hover:text-black">Download</a>
               </div>
               {primary && (
                 <div className="mt-1 text-xs text-neutral-500">&ldquo;{primary}&rdquo;</div>
@@ -190,3 +211,44 @@ function StatusBadge({ status }: { status: string }) {
     </span>
   );
 }
+
+// Group thumbnails into runs by clustering on created_at
+// Thumbnails within 5 minutes of each other are considered the same run
+function groupThumbnailsByRun(thumbnails: ThumbRow[]): ThumbRow[][] {
+  if (thumbnails.length === 0) return [];
+
+  const RUN_GAP_MS = 5 * 60 * 1000; // 5 minutes
+  const runs: ThumbRow[][] = [];
+  let currentRun: ThumbRow[] = [thumbnails[0]];
+
+  for (let i = 1; i < thumbnails.length; i++) {
+    const prev = new Date(currentRun[currentRun.length - 1].created_at).getTime();
+    const curr = new Date(thumbnails[i].created_at).getTime();
+    if (Math.abs(prev - curr) > RUN_GAP_MS) {
+      runs.push(currentRun);
+      currentRun = [thumbnails[i]];
+    } else {
+      currentRun.push(thumbnails[i]);
+    }
+  }
+  runs.push(currentRun);
+
+  // Within each run, sort by variant_index ascending
+  return runs.map((run) => [...run].sort((a, b) => a.variant_index - b.variant_index));
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = Date.now();
+  const diffMs = now - date.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return `${diffMin}m ago`;
+  if (diffHr < 24) return `${diffHr}h ago`;
+  if (diffDay < 7) return `${diffDay}d ago`;
+  return date.toLocaleDateString();
+}
+

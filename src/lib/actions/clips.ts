@@ -137,6 +137,7 @@ export async function listThumbnailsForClip(clipId: string) {
     .from('thumbnail_outputs')
     .select('*')
     .eq('clip_id', clipId)
+    .order('created_at', { ascending: false })
     .order('variant_index', { ascending: true });
   if (error) return [];
   return data;
