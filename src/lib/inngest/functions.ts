@@ -90,10 +90,10 @@ export const processClip = inngest.createFunction(
     // Stage: frame_extraction
     // -----------------------------------------------------------------------
     const framesData = await step.run('frame_extraction', async () => {
-      const existing = await getCompletedStage(supabase, clipId, 'frame_extraction');
+      const existing = await getCompletedStage(clipId, 'frame_extraction');
       if (existing?.output) return existing.output as { frames: FrameRecord[] };
 
-      await markStageRunning(supabase, clipId, 'frame_extraction');
+      await markStageRunning(clipId, 'frame_extraction');
       await updateStatus('Extracting frames...');
 
       try {
@@ -113,10 +113,10 @@ export const processClip = inngest.createFunction(
 
         await cleanup(tmpPath);
         const output = { frames };
-        await markStageComplete(supabase, clipId, 'frame_extraction', output);
+        await markStageComplete(clipId, 'frame_extraction', output);
         return output;
       } catch (err) {
-        await markStageFailed(supabase, clipId, 'frame_extraction', err instanceof Error ? err.message : String(err));
+        await markStageFailed(clipId, 'frame_extraction', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
@@ -125,11 +125,11 @@ export const processClip = inngest.createFunction(
     // Stage: auto_description (runs if clip.description is blank)
     // -----------------------------------------------------------------------
     await step.run('auto_description', async () => {
-      const existing = await getCompletedStage(supabase, clipId, 'auto_description');
+      const existing = await getCompletedStage(clipId, 'auto_description');
       if (existing) return;
       if (ctx0.clip.description && ctx0.clip.description.trim().length > 0) return;
 
-      await markStageRunning(supabase, clipId, 'auto_description');
+      await markStageRunning(clipId, 'auto_description');
       await updateStatus('Writing description in model voice...');
 
       try {
@@ -140,9 +140,9 @@ export const processClip = inngest.createFunction(
           .map((f) => f.url);
         const desc = await generateAutoDescription(sampleUrls, ctx.clip, ctx.descExamples, ctx.model);
         await supabase.from('clips').update({ auto_description: desc }).eq('id', clipId);
-        await markStageComplete(supabase, clipId, 'auto_description', { length: desc.length });
+        await markStageComplete(clipId, 'auto_description', { length: desc.length });
       } catch (err) {
-        await markStageFailed(supabase, clipId, 'auto_description', err instanceof Error ? err.message : String(err));
+        await markStageFailed(clipId, 'auto_description', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
@@ -151,10 +151,10 @@ export const processClip = inngest.createFunction(
     // Stage: frame_scoring — pick top 3 frames
     // -----------------------------------------------------------------------
     const scoredOutput = await step.run('frame_scoring', async () => {
-      const existing = await getCompletedStage(supabase, clipId, 'frame_scoring');
+      const existing = await getCompletedStage(clipId, 'frame_scoring');
       if (existing?.output) return existing.output as { top: { url: string; timestamp: number }[] };
 
-      await markStageRunning(supabase, clipId, 'frame_scoring');
+      await markStageRunning(clipId, 'frame_scoring');
       await updateStatus('Scoring frames with Claude...');
 
       try {
@@ -175,10 +175,10 @@ export const processClip = inngest.createFunction(
           .filter((x): x is { url: string; timestamp: number } => x !== null);
 
         const output = { top };
-        await markStageComplete(supabase, clipId, 'frame_scoring', output);
+        await markStageComplete(clipId, 'frame_scoring', output);
         return output;
       } catch (err) {
-        await markStageFailed(supabase, clipId, 'frame_scoring', err instanceof Error ? err.message : String(err));
+        await markStageFailed(clipId, 'frame_scoring', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
@@ -187,10 +187,10 @@ export const processClip = inngest.createFunction(
     // Stage: template_selection — Claude picks 3 templates + writes hook copy
     // -----------------------------------------------------------------------
     const selections = await step.run('template_selection', async () => {
-      const existing = await getCompletedStage(supabase, clipId, 'template_selection');
+      const existing = await getCompletedStage(clipId, 'template_selection');
       if (existing?.output) return (existing.output as { selections: Awaited<ReturnType<typeof selectTemplatesForClip>> }).selections;
 
-      await markStageRunning(supabase, clipId, 'template_selection');
+      await markStageRunning(clipId, 'template_selection');
       await updateStatus('Selecting templates and writing copy...');
 
       try {
@@ -202,10 +202,10 @@ export const processClip = inngest.createFunction(
           ctx.thumbExamples,
           ctx.descExamples
         );
-        await markStageComplete(supabase, clipId, 'template_selection', { selections: picks });
+        await markStageComplete(clipId, 'template_selection', { selections: picks });
         return picks;
       } catch (err) {
-        await markStageFailed(supabase, clipId, 'template_selection', err instanceof Error ? err.message : String(err));
+        await markStageFailed(clipId, 'template_selection', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
@@ -214,10 +214,10 @@ export const processClip = inngest.createFunction(
     // Stage: subject_cutouts — background removal on all unique frames needed
     // -----------------------------------------------------------------------
     const cutoutMap = await step.run('subject_cutouts', async () => {
-      const existing = await getCompletedStage(supabase, clipId, 'subject_cutouts');
+      const existing = await getCompletedStage(clipId, 'subject_cutouts');
       if (existing?.output) return (existing.output as { map: Record<number, string> }).map;
 
-      await markStageRunning(supabase, clipId, 'subject_cutouts');
+      await markStageRunning(clipId, 'subject_cutouts');
       await updateStatus('Removing backgrounds from subjects...');
 
       try {
@@ -253,10 +253,10 @@ export const processClip = inngest.createFunction(
         const cutoutUrls = Object.values(map);
         await supabase.from('clips').update({ cutout_urls: cutoutUrls }).eq('id', clipId);
 
-        await markStageComplete(supabase, clipId, 'subject_cutouts', { map });
+        await markStageComplete(clipId, 'subject_cutouts', { map });
         return map;
       } catch (err) {
-        await markStageFailed(supabase, clipId, 'subject_cutouts', err instanceof Error ? err.message : String(err));
+        await markStageFailed(clipId, 'subject_cutouts', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
@@ -288,8 +288,7 @@ export const processClip = inngest.createFunction(
         const pngBuf = await renderTemplate({
           template_id: sel.template_id,
           subject_urls: subjectUrls,
-          text_primary: sel.text_primary,
-          text_secondary: sel.text_secondary,
+          lockup: sel.lockup,
           palette: sel.palette,
           background_prompt: sel.background_prompt,
           watermark_url: ctx.model.watermark_url,
@@ -308,8 +307,7 @@ export const processClip = inngest.createFunction(
           template_id: sel.template_id,
           composition_brief: {
             template_id: sel.template_id,
-            text_primary: sel.text_primary,
-            text_secondary: sel.text_secondary,
+            lockup: sel.lockup,
             palette: sel.palette,
             reasoning: sel.reasoning,
           },

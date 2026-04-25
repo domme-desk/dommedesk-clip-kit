@@ -4,10 +4,8 @@ export type StageName =
   | 'frame_extraction'
   | 'auto_description'
   | 'frame_scoring'
-  | 'composition_briefs'
-  | 'subject_masking'
-  | 'background_generation'
-  | 'compositing';
+  | 'template_selection'
+  | 'subject_cutouts';
 
 export async function markStageRunning(clipId: string, stage: StageName, input?: Record<string, unknown>) {
   const supabase = createAdminClient();

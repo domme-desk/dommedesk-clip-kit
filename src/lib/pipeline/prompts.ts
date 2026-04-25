@@ -1,7 +1,7 @@
 import { anthropic, CLAUDE_MODEL } from '@/lib/anthropic';
-import type { TemplateId } from './templates';
 import { TEMPLATES, templatesForClaude, type TemplateId } from './templates';
 import type { Model, StyleLibraryItem, Clip } from '@/lib/supabase/types';
+import type { FontKey } from './fonts';
 
 export type ScoredFrame = {
   timestamp: number;
@@ -11,22 +11,43 @@ export type ScoredFrame = {
   composition_notes: string;
 };
 
+export type FillBox = {
+  color: string;                  // hex bg color
+  padding_x_pct?: number;         // horizontal padding as fraction of font size (default 0.25)
+  padding_y_pct?: number;         // vertical padding as fraction of font size (default 0.10)
+  rotation_deg?: number;          // overrides line's rotation_deg if set
+  border_radius_pct?: number;     // rounded corners (default 0 = sharp)
+};
+
+export type LockupLine = {
+  text: string;
+  font: FontKey;
+  size_pct: number;
+  fill: string;
+  outline_color: string;
+  outline_width_pct?: number;
+  italic?: boolean;
+  letter_spacing_pct?: number;
+  shadow?: boolean;
+  glow_color?: string | null;
+  rotation_deg?: number;
+  fill_box?: FillBox;             // when set, draw filled rect behind text (tag-box style)
+};
+
 export type CompositionBrief = {
   variant_index: number;
-  layout: 'single' | 'mirrored' | 'triple';  // how many copies of the subject
-  text_primary: string;
-  text_secondary: string | null;
+  layout: 'single' | 'mirrored' | 'triple';
+  template_id?: string;
+  lockup: LockupLine[];          // 1-5 lines, top-to-bottom stack
   text_position: 'top' | 'bottom' | 'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right';
-  text_color: string;
-  text_outline_color: string;
-  text_shadow: boolean;
   background_prompt: string;
   mood: string;
 };
 
 type VisionContent =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'; data: string } };
+  | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'; data: string } }
+  | { type: 'image'; source: { type: 'url'; url: string } };
 
 async function urlToImageBlock(url: string): Promise<VisionContent> {
   const res = await fetch(url);
@@ -349,20 +370,77 @@ TASK: Design 3 thumbnail compositions, one per frame. Each variant has a FIXED L
 - Variant 2: layout = "mirrored" (subject duplicated — one copy on the left, mirrored copy on the right, text between/over them)
 - Variant 3: layout = "triple" (three copies — two at the edges, one center-front — text overlaid big)
 
-COPY (text_primary):
-- 2-5 words MAX. Punchy, hot, in the creator's voice. Match her published description tone.
+LOCKUP — the text composition is now a STACK of styled lines, like a poster lockup.
+Each variant returns a "lockup" array of 1-5 lines (1-2 is most common, 3 is dramatic, 4-5 is RARE — only for layered hooks).
+
+Each line picks its OWN font, size, fill color, outline color, italic, shadow, glow.
+This is how you get reference looks like "LOCKED UP" (Impact white) → "& RUINED" (Pinyon Script pink italic).
+
+AVAILABLE FONTS (FontKey values you may use):
+- Heavy display: 'anton', 'bebas-neue', 'bowlby-one', 'fredoka-one', 'alfa-slab-one', 'rubik-mono-one', 'passion-one', 'abril-fatface', 'monoton'
+- Heavy sans-black: 'montserrat-black'
+- Elegant serif: 'playfair-display-black', 'yeseva-one'
+- Script (use sparingly, larger size, thicker outline): 'dancing-script', 'pacifico', 'pinyon-script', 'sacramento', 'caveat'
+- Tech/futuristic: 'orbitron'
+- Handwritten/marker: 'permanent-marker'
+
+LOCKUP DESIGN RULES:
+- 1-2 lines is default. Use 3 only when you have a clear primary + accent + tag structure.
+- Sum of size_pct across all lines should be 0.20-0.45 (so the lockup fills 20-45% of vertical canvas).
+- The BIGGEST line is the hook. Smaller lines support it.
+- Mix styles for contrast: heavy display + script accent, or all-caps display + italicized rejoinder.
+- ALL CAPS for display fonts. Mixed case OK for scripts and serifs.
+- Each line picks its own fill from the punchy palette: white, yellow, gold-yellow, orange, red, crimson, hot-pink, magenta, cyan, electric-blue, royal-blue, lime, neon-green, electric-purple, or black.
+- Outline is almost always #000000 (black). For black fills use #FFFFFF (white) outline.
+- Use italic on script lines for emotion. Avoid italic on heavy display — looks weak.
+- glow_color is optional and rare — use only when fill is a bright color and you want neon punch.
+- rotation_deg between -8 and 8 degrees for accent lines that should feel scrawled or stamped.
+
+COPY rules per line:
+- 1-4 words per line, 5 max. Punchy, hot, in the creator's voice.
 - Each variant different angle: command / tease / consequence
-- ALL CAPS is the default
 - Examples of good hooks: "STAY CAGED", "LOSER POSITION", "OBEY THE SCREEN", "SWALLOW IT"
+- Lockup examples (these mirror real high-performing creator thumbnails):
+   * "Locked Up & Ruined" pattern — heavy display + script accent:
+     [{text:"LOCKED UP", font:"bowlby-one", size_pct:0.20, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"& Ruined", font:"pinyon-script", size_pct:0.16, fill:"#FF1493", outline_color:"#000000", italic:true, rotation_deg:-3}]
+   * "Born Again Virgin" pattern — display word + tagged accent box:
+     [{text:"BORN AGAIN", font:"anton", size_pct:0.22, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"VIRGIN", font:"anton", size_pct:0.13, fill:"#FFFFFF", outline_color:"#FF1493", rotation_deg:-3, fill_box:{color:"#FF1493", padding_x_pct:0.30, padding_y_pct:0.12, rotation_deg:-3}}]
+   * "Goddess of Gooning" pattern — three-line vertical stack with connector:
+     [{text:"GODDESS", font:"playfair-display-black", size_pct:0.18, fill:"#FFEB3B", outline_color:"#000000"},
+      {text:"OF", font:"playfair-display-black", size_pct:0.10, fill:"#FFEB3B", outline_color:"#000000"},
+      {text:"GOONING", font:"playfair-display-black", size_pct:0.18, fill:"#FFEB3B", outline_color:"#000000"}]
+   * "Premie Challenge" pattern — two big display words + supporting subtitle:
+     [{text:"PREMIE CHALLENGE", font:"anton", size_pct:0.18, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"5 MINUTES TO GOON", font:"bebas-neue", size_pct:0.08, fill:"#FFFFFF", outline_color:"#000000"}]
+   * "Trying Not to Relapse?" pattern — stacked display + box-tagged accent:
+     [{text:"TRYING", font:"anton", size_pct:0.16, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"NOT TO", font:"anton", size_pct:0.10, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"RELAPSE?", font:"anton", size_pct:0.16, fill:"#FFFFFF", outline_color:"#000000", fill_box:{color:"#FF1744"}}]
+   * "Warning: This Will Cause Damage" pattern — three-line all-display, biggest first:
+     [{text:"WARNING:", font:"alfa-slab-one", size_pct:0.16, fill:"#FF1744", outline_color:"#000000"},
+      {text:"THIS WILL CAUSE", font:"anton", size_pct:0.13, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"DAMAGE", font:"anton", size_pct:0.18, fill:"#FFFFFF", outline_color:"#000000"}]
+   * "Princess Mindfuck" pattern — display + flowing script:
+     [{text:"PRINCESS", font:"montserrat-black", size_pct:0.13, fill:"#FFFFFF", outline_color:"#000000"},
+      {text:"Mindfuck", font:"sacramento", size_pct:0.20, fill:"#FFEB3B", outline_color:"#000000", italic:true}]
+   * Single-line bold (use when copy is one strong word/phrase):
+     [{text:"OBEY", font:"anton", size_pct:0.30, fill:"#FFFFFF", outline_color:"#000000"}]
+
+DESIGN GUIDANCE FROM REAL REFERENCES:
+- 1-line lockups work best for ALL CAPS power words (3-8 chars): "OBEY", "SWALLOW IT", "GIRLCOCK"
+- 2-line lockups are the sweet spot — primary hook + accent (~70% of references use this)
+- 3-line lockups when you have command + qualifier + payoff (Goddess Of Gooning, Warning This Will Cause Damage)
+- 4-5 lines is RARE — only when narrative demands it
+- fill_box is a signature element: rotated colored rect behind a single accent word. Use it on ONE line max per lockup. Pink (#FF1493), red (#FF1744), or hot magenta (#FF00FF) are the classic box colors.
+- Script fonts (pinyon-script, sacramento, dancing-script, pacifico, caveat) ALWAYS get italic:true and a slight rotation_deg between -5 and -2 for that hand-stamped feel.
+- When a script line is paired with a display line, make the script larger or comparable — never smaller. Script as accent, but visually equal-or-greater weight.
 
 BACKGROUND PROMPT:
 - SIMPLE. Color and light only. NO objects, no scenes, no kink references, no text, no letters.
 - Use the brand colors (${primary}, ${accent}) or fall back to hot pink / magenta / purple / red
-- Each variant uses a different specific color+treatment combo (e.g. "hot pink gradient with bokeh" vs "deep magenta to purple radial gradient" vs "glossy red with soft light rays")
-
-TEXT COLORS:
-- Default to white, hot pink, or yellow with heavy black outline
-- Must pop hard against the background
+- Each variant uses a different specific color+treatment combo
 
 Return ONLY JSON:
 
@@ -371,24 +449,28 @@ Return ONLY JSON:
     {
       "variant_index": 1,
       "layout": "single",
-      "text_primary": "<2-5 words>",
-      "text_secondary": "<optional 2-4 words or null>",
+      "lockup": [
+        { "text": "<words>", "font": "<FontKey>", "size_pct": 0.22, "fill": "#hex", "outline_color": "#000000", "italic": false, "shadow": true, "rotation_deg": 0 }
+      ],
       "text_position": "<top|bottom|center|top-left|top-right|bottom-left|bottom-right>",
-      "text_color": "<hex>",
-      "text_outline_color": "<hex>",
-      "text_shadow": true,
-      "background_prompt": "<1-2 sentences, colors and light only, no objects or people, safe for all content filters>",
+      "background_prompt": "<1-2 sentences, colors and light only>",
       "mood": "<one word>"
     },
     {
       "variant_index": 2,
       "layout": "mirrored",
-      ...
+      "lockup": [...],
+      "text_position": "...",
+      "background_prompt": "...",
+      "mood": "..."
     },
     {
       "variant_index": 3,
       "layout": "triple",
-      ...
+      "lockup": [...],
+      "text_position": "...",
+      "background_prompt": "...",
+      "mood": "..."
     }
   ]
 }`,
@@ -422,12 +504,11 @@ Return ONLY JSON:
 export type TemplateSelection = {
   variant_index: number;
   template_id: TemplateId;
-  text_primary: string;
-  text_secondary: string | null;
+  lockup: LockupLine[];
   palette: string[];
   frame_indices: number[];
-  background_concept: string;  // Claude's short description of the thematic scene (e.g. 'heavenly clouds with soft sunlight')
-  background_prompt: string;   // the full Flux-ready prompt Claude generated
+  background_concept: string;  // Claude's short description of the thematic scene
+  background_prompt: string | null;   // the full Flux-ready prompt; null = use algorithmic bg
   reasoning: string;
 };
 
@@ -534,8 +615,6 @@ function postProcessSelections(
 ): TemplateSelection[] {
   if (selections.length === 0) return selections;
 
-  // Enforce same text_primary across all variants (use variant 1's normalized version)
-  const canonicalText = normalizeTitle(selections[0].text_primary);
 
   // Soft variety check: if references suggest the user wants a wider mix,
   // we still nudge toward 1 from each category, but only if Claude picked
@@ -629,8 +708,10 @@ function postProcessSelections(
 
   return selections.map((s) => ({
     ...s,
-    text_primary: canonicalText,
-    text_secondary: null,
+    // Each variant keeps its own lockup — Claude tunes typography to each
+    // template + layout + mood. References show this produces higher-quality output
+    // than forcing a single canonical lockup across all 6 variants.
+    lockup: s.lockup,
     // Force brand colors into bg slots — Claude only controls text fill + outline
     palette: enforcePaletteContrast([
       s.palette[0] || '#FFFFFF',  // text_fill (Claude's choice)
@@ -639,7 +720,7 @@ function postProcessSelections(
       brandAccent,                 // bg_accent FORCED to brand
     ], s.template_id),
     background_concept: s.background_concept || 'simple',
-    // Treat 'simple' concept, empty/null prompt, or prompts containing the word 'simple' as a signal to use algorithmic (pass null through)
+    // Treat 'simple' concept, empty/null prompt, or prompts containing 'simple' as algorithmic-bg (pass null)
     background_prompt: (
       !s.background_prompt
       || s.background_prompt.trim().length === 0

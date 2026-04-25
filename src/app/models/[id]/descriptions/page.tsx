@@ -58,7 +58,7 @@ export default async function DescriptionsPage({ params }: Props) {
                     </p>
                     {item.manual_tags && item.manual_tags.length > 0 && (
                       <div className="mt-2 flex flex-wrap gap-1">
-                        {item.manual_tags.map((tag, i) => (
+                        {item.manual_tags.map((tag: string, i: number) => (
                           <span
                             key={i}
                             className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600"

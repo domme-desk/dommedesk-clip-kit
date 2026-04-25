@@ -42,7 +42,7 @@ export default async function ClipDetailPage({ params }: Props) {
           </p>
           {clip.tags && clip.tags.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
-              {clip.tags.map((t, i) => (
+              {clip.tags.map((t: string, i: number) => (
                 <span key={i} className="rounded-full bg-neutral-100 px-2 py-0.5 text-xs text-neutral-600">
                   {t}
                 </span>
@@ -138,6 +138,7 @@ type ThumbRow = {
   image_url: string;
   variant_index: number;
   composition_brief: Record<string, unknown> | null;
+  created_at: string;
 };
 
 function ThumbnailsGrid({ thumbnails }: { thumbnails: ThumbRow[] }) {
@@ -145,7 +146,16 @@ function ThumbnailsGrid({ thumbnails }: { thumbnails: ThumbRow[] }) {
     <div className="grid gap-4 sm:grid-cols-3">
       {thumbnails.map((t) => {
         const brief = (t.composition_brief || {}) as Record<string, unknown>;
-        const primary = typeof brief.text_primary === 'string' ? brief.text_primary : null;
+        // Support both old (text_primary string) and new (lockup array) brief shapes
+        let primary: string | null = null;
+        if (Array.isArray(brief.lockup)) {
+          const lines = (brief.lockup as Array<{ text?: unknown }>)
+            .map((l) => (typeof l?.text === 'string' ? l.text : ''))
+            .filter(Boolean);
+          if (lines.length > 0) primary = lines.join(' / ');
+        } else if (typeof brief.text_primary === 'string') {
+          primary = brief.text_primary;
+        }
         const bgConcept = typeof brief.background_concept === 'string' ? brief.background_concept : null;
         return (
           <div key={t.id} className="overflow-hidden rounded-lg border border-neutral-200">

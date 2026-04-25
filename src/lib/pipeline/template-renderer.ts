@@ -1,6 +1,5 @@
-import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
+import { createCanvas, GlobalFonts, type SKRSContext2D } from '@napi-rs/canvas';
 import sharp from 'sharp';
-import { Resvg } from '@resvg/resvg-js';
 import { loadAllFonts, getFontFamily, type FontKey } from './fonts';
 import { TEMPLATES, type TemplateId, type TemplateSpec, type BackgroundStyle, type TextEffect } from './templates';
 
@@ -9,6 +8,19 @@ import { TEMPLATES, type TemplateId, type TemplateSpec, type BackgroundStyle, ty
 // ---------------------------------------------------------------------------
 
 export const CANVAS_W = 1280;
+
+
+// ---------------------------------------------------------------------------
+// Shared types
+// ---------------------------------------------------------------------------
+
+export type TextPlacement = {
+  x: number;
+  y: number;
+  maxWidth: number;
+  anchor: 'start' | 'middle' | 'end';
+  verticalAlign: 'top' | 'center' | 'bottom';
+};
 
 // ---------------------------------------------------------------------------
 // Register fonts globally with @napi-rs/canvas (once, on module load)
@@ -42,8 +54,7 @@ export const CANVAS_H = 720;
 export type TemplateRenderInput = {
   template_id: TemplateId;
   subject_urls: string[];
-  text_primary: string;
-  text_secondary?: string | null;
+  lockup: LockupLineRender[];
   palette: string[];
   background_prompt?: string | null;  // Flux prompt; when present we AI-generate the bg, else algorithmic
   watermark_url?: string | null;
@@ -75,191 +86,8 @@ function pickColor(palette: string[], idx: number, fallback: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// SVG -> PNG using resvg (with bundled fonts)
+// Subject post-FX helpers (restored from pre-lockup commit)
 // ---------------------------------------------------------------------------
-
-function renderSvgToPng(svg: string, width: number, height: number): Buffer {
-  const fonts = loadAllFonts();
-  const resvg = new Resvg(svg, {
-    fitTo: { mode: 'width', value: width },
-    font: {
-      fontBuffers: fonts.map((f) => f.buffer),
-      loadSystemFonts: false,
-      defaultFontFamily: 'sans-serif',
-    },
-    background: 'rgba(0,0,0,0)',
-  });
-  return resvg.render().asPng();
-}
-
-// ---------------------------------------------------------------------------
-// Canvas-based text renderer (replaces Resvg for text — Resvg can't render
-// non-Anton fonts correctly even with valid TTF buffers loaded)
-// ---------------------------------------------------------------------------
-
-function renderTextWithCanvas(opts: {
-  primaryText: string;
-  primaryFont: FontKey;
-  primaryColor: string;
-  outlineColor: string;
-  effect: TextEffect;
-  placement: TextPlacement;
-  canvasW: number;
-  canvasH: number;
-  primaryRelativeSize?: number;
-}): Buffer {
-  ensureFontsRegistered();
-
-  const {
-    primaryText, primaryFont, primaryColor, outlineColor,
-    effect, placement, canvasW, canvasH, primaryRelativeSize = 0.28,
-  } = opts;
-
-  const targetSize = Math.round(canvasH * primaryRelativeSize);
-  // Find a font size that fits within maxWidth — measure with canvas
-  const measureCanvas = createCanvas(1, 1);
-  const measureCtx = measureCanvas.getContext('2d');
-  const family = getFontFamily(primaryFont);
-
-  let fontSize = targetSize;
-  while (fontSize > 14) {
-    measureCtx.font = `${fontSize}px "${family}"`;
-    const metrics = measureCtx.measureText(primaryText);
-    if (metrics.width <= placement.maxWidth) break;
-    fontSize -= 2;
-  }
-
-  // Script fonts have thin natural strokes — make outline thicker for legibility
-  const SCRIPT_FONTS: FontKey[] = ['pinyon-script', 'sacramento', 'dancing-script', 'pacifico', 'caveat'];
-  const isScript = SCRIPT_FONTS.includes(primaryFont);
-  const strokeMultiplier = isScript ? 0.16 : 0.11;
-  const stroke = Math.max(isScript ? 10 : 6, Math.round(fontSize * strokeMultiplier));
-
-  const canvas = createCanvas(canvasW, canvasH);
-  const ctx = canvas.getContext('2d');
-
-  ctx.font = `${fontSize}px "${family}"`;
-  ctx.textBaseline = 'alphabetic';
-  ctx.textAlign = placement.anchor === 'start' ? 'left' : placement.anchor === 'end' ? 'right' : 'center';
-
-  // Apply effect
-  switch (effect) {
-    case 'heavy-outline-shadow': {
-      // Heavy outline + drop shadow
-      ctx.shadowColor = 'rgba(0,0,0,0.9)';
-      ctx.shadowBlur = 14;
-      ctx.shadowOffsetY = 8;
-      ctx.lineWidth = stroke;
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = outlineColor;
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.shadowColor = 'transparent';
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'neon-glow': {
-      // Outer glow then sharp text
-      ctx.shadowColor = primaryColor;
-      ctx.shadowBlur = 30;
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      ctx.shadowBlur = 12;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      ctx.shadowBlur = 0;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'clean-outline': {
-      ctx.lineWidth = stroke;
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = outlineColor;
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'layered-multi': {
-      // Offset layers in 3 colors for retro feel
-      ctx.fillStyle = '#000000';
-      ctx.fillText(primaryText, placement.x + 6, placement.y + 6);
-      ctx.fillStyle = outlineColor;
-      ctx.fillText(primaryText, placement.x + 3, placement.y + 3);
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'elegant-drop-shadow': {
-      ctx.shadowColor = 'rgba(0,0,0,0.6)';
-      ctx.shadowBlur = 10;
-      ctx.shadowOffsetY = 4;
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'bubble-thick-rounded': {
-      ctx.lineWidth = stroke * 1.5;
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = outlineColor;
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.lineWidth = stroke * 0.6;
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'chromatic-aberration': {
-      // Cyan + Magenta offsets, then white center
-      ctx.fillStyle = '#00F5FF';
-      ctx.fillText(primaryText, placement.x - 4, placement.y);
-      ctx.fillStyle = '#FF1493';
-      ctx.fillText(primaryText, placement.x + 4, placement.y);
-      ctx.lineWidth = stroke * 0.6;
-      ctx.strokeStyle = outlineColor;
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    case 'glow-transparent': {
-      ctx.shadowColor = primaryColor;
-      ctx.shadowBlur = 24;
-      ctx.lineWidth = stroke * 0.8;
-      ctx.strokeStyle = primaryColor;
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.shadowBlur = 0;
-      ctx.fillStyle = 'rgba(255,255,255,0.95)';
-      ctx.fillText(primaryText, placement.x, placement.y);
-      break;
-    }
-    default: {
-      ctx.lineWidth = stroke;
-      ctx.lineJoin = 'round';
-      ctx.strokeStyle = outlineColor;
-      ctx.strokeText(primaryText, placement.x, placement.y);
-      ctx.fillStyle = primaryColor;
-      ctx.fillText(primaryText, placement.x, placement.y);
-    }
-  }
-
-  return canvas.toBuffer('image/png');
-}
-
-
-
-// ---------------------------------------------------------------------------
-// Subject prep: tight crop + edge feather
-// ---------------------------------------------------------------------------
-
-async function prepSubject(raw: Buffer): Promise<Buffer> {
-  const trimmed = await sharp(raw).trim({ threshold: 1 }).toBuffer();
-  const meta = await sharp(trimmed).metadata();
-  if (!meta.hasAlpha) return trimmed;
-  const alpha = await sharp(trimmed).extractChannel('alpha').blur(2.2).toBuffer();
-  const rgb = await sharp(trimmed).removeAlpha().toBuffer();
-  return sharp(rgb).joinChannel(alpha).toBuffer();
-}
 
 async function subjectShadow(subject: Buffer, intensity: number = 0.5): Promise<Buffer> {
   const meta = await sharp(subject).metadata();
@@ -282,335 +110,218 @@ async function subjectRimLight(subject: Buffer, colorHex: string, intensity: num
   return sharp(colored).joinChannel(edge).png().toBuffer();
 }
 
-// ---------------------------------------------------------------------------
-// Background generators (algorithmic, no AI model needed)
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Thematic background generator (Flux with algorithmic fallback)
+// SVG -> PNG using resvg (with bundled fonts)
 // ---------------------------------------------------------------------------
 
-async function generateBackgroundThematic(
-  fluxPrompt: string,
-  style: BackgroundStyle,
-  palette: string[]
-): Promise<Buffer> {
-  // Try Flux first. On any error (NSFW, timeout, etc), fall back silently.
-  try {
-    const { generateBackground: fluxGenerate } = await import('@/lib/replicate');
-    // Reinforce the content-safety guardrails in the prompt itself
-    const safePrompt = `${fluxPrompt}. Photography, no people, no text, no watermarks. Cinematic lighting, atmospheric, high-end aesthetic.`;
-    const fluxUrl = await fluxGenerate(safePrompt, '16:9');
-    const res = await fetch(fluxUrl);
-    if (!res.ok) throw new Error(`Flux result fetch failed: ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    // Resize to canvas dimensions in case Flux returned non-exact size
-    return sharp(buf).resize(CANVAS_W, CANVAS_H, { fit: 'cover', position: 'center' }).png().toBuffer();
-  } catch (err) {
-    console.warn('[template-renderer] Flux background failed, falling back to algorithmic:', err instanceof Error ? err.message : err);
-    return generateBackgroundAlgorithmic(style, palette);
-  }
-}
-
-async function generateBackgroundAlgorithmic(style: BackgroundStyle, palette: string[]): Promise<Buffer> {
-  // Palette convention from Claude: [text_fill, text_outline, bg_primary, bg_accent]
-  // Backgrounds use indices 2 and 3.
-  const c1 = pickColor(palette, 2, '#FF1493');
-  const c2 = pickColor(palette, 3, '#9D4EDD');
-  const c3 = pickColor(palette, 0, '#000000');  // fallback tertiary
-
-  const W = CANVAS_W;
-  const H = CANVAS_H;
-
-  let svg = '';
-
-  switch (style) {
-    case 'flat-saturated':
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="${c1}"/></svg>`;
-      break;
-
-    case 'gradient':
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="${c1}"/><stop offset="100%" stop-color="${c2}"/>
-        </linearGradient></defs>
-        <rect width="${W}" height="${H}" fill="url(#g)"/>
-      </svg>`;
-      break;
-
-    case 'dark-moody-bokeh': {
-      // Dark background with soft colored circles (bokeh)
-      const circles = [];
-      for (let i = 0; i < 14; i++) {
-        const cx = Math.random() * W;
-        const cy = Math.random() * H;
-        const r = 30 + Math.random() * 80;
-        const color = Math.random() > 0.5 ? c1 : c2;
-        const op = 0.15 + Math.random() * 0.25;
-        circles.push(`<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color}" opacity="${op}"/>`);
-      }
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><radialGradient id="bg" cx="50%" cy="50%" r="70%">
-          <stop offset="0%" stop-color="${c2}" stop-opacity="0.4"/>
-          <stop offset="100%" stop-color="#0A0510"/>
-        </radialGradient><filter id="blur"><feGaussianBlur stdDeviation="20"/></filter></defs>
-        <rect width="${W}" height="${H}" fill="url(#bg)"/>
-        <g filter="url(#blur)">${circles.join('')}</g>
-      </svg>`;
-      break;
-    }
-
-    case 'bright-abstract':
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><radialGradient id="ba" cx="50%" cy="50%" r="80%">
-          <stop offset="0%" stop-color="${c3 || '#FFD700'}"/>
-          <stop offset="50%" stop-color="${c1}"/>
-          <stop offset="100%" stop-color="${c2}"/>
-        </radialGradient></defs>
-        <rect width="${W}" height="${H}" fill="url(#ba)"/>
-      </svg>`;
-      break;
-
-    case 'spiral-radial': {
-      // Concentric circles creating spiral/hypno effect
-      const rings = [];
-      for (let i = 0; i < 12; i++) {
-        const rad = (i + 1) * 80;
-        const color = i % 2 === 0 ? c1 : (c3 || '#000000');
-        const op = 0.7 - i * 0.04;
-        rings.push(`<circle cx="${W/2}" cy="${H/2}" r="${rad}" fill="none" stroke="${color}" stroke-width="40" opacity="${op}"/>`);
-      }
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <rect width="${W}" height="${H}" fill="${c2}"/>
-        ${rings.join('')}
-      </svg>`;
-      break;
-    }
-
-    case 'environmental-bokeh':
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><linearGradient id="eb" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#2D1B3D"/>
-          <stop offset="60%" stop-color="${c1}" stop-opacity="0.6"/>
-          <stop offset="100%" stop-color="#1A0E25"/>
-        </linearGradient><filter id="b"><feGaussianBlur stdDeviation="40"/></filter></defs>
-        <rect width="${W}" height="${H}" fill="url(#eb)"/>
-        <g filter="url(#b)" opacity="0.7">
-          <circle cx="200" cy="180" r="120" fill="${c1}"/>
-          <circle cx="1050" cy="500" r="160" fill="${c2}"/>
-          <circle cx="640" cy="300" r="100" fill="${c3 || '#FFD700'}"/>
-        </g>
-      </svg>`;
-      break;
-
-    case 'dark-texture':
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><radialGradient id="dt" cx="50%" cy="50%" r="80%">
-          <stop offset="0%" stop-color="${c1}" stop-opacity="0.5"/>
-          <stop offset="100%" stop-color="#050008"/>
-        </radialGradient></defs>
-        <rect width="${W}" height="${H}" fill="url(#dt)"/>
-      </svg>`;
-      break;
-
-    case 'pastel-bright':
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><linearGradient id="pb" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#FFE5F1"/>
-          <stop offset="100%" stop-color="${c1}"/>
-        </linearGradient></defs>
-        <rect width="${W}" height="${H}" fill="url(#pb)"/>
-      </svg>`;
-      break;
-
-    case 'deep-neon': {
-      const gridLines = [];
-      for (let i = 0; i < 10; i++) {
-        const y = H - i * 40 - 100;
-        const op = 0.3 - i * 0.02;
-        gridLines.push(`<line x1="0" y1="${y}" x2="${W}" y2="${y}" stroke="${c1}" stroke-width="1" opacity="${op}"/>`);
-      }
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
-        <defs><linearGradient id="dn" x1="0%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#0A0012"/>
-          <stop offset="70%" stop-color="${c2}" stop-opacity="0.5"/>
-          <stop offset="100%" stop-color="${c1}"/>
-        </linearGradient></defs>
-        <rect width="${W}" height="${H}" fill="url(#dn)"/>
-        ${gridLines.join('')}
-      </svg>`;
-      break;
-    }
-
-    default:
-      svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg"><rect width="${W}" height="${H}" fill="${c1}"/></svg>`;
-  }
-
-  return renderSvgToPng(svg, W, H);
-}
 
 // ---------------------------------------------------------------------------
-// Text rendering per effect
+// Canvas-based text renderer (replaces Resvg for text — Resvg can't render
+// non-Anton fonts correctly even with valid TTF buffers loaded)
+// ---------------------------------------------------------------------------
+// Lockup renderer — draws a stack of independently-styled lines.
+// Each line picks its own font, size, fill, outline, italic, glow, rotation.
+// Font is from the 20 registered FontKeys; canvas-based for reliable font matching.
 // ---------------------------------------------------------------------------
 
-type TextPlacement = {
-  x: number;
-  y: number;
-  anchor: 'start' | 'middle' | 'end';
-  maxWidth: number;
+export type LockupLineRender = {
+  text: string;
+  font: FontKey;
+  size_pct: number;
+  fill: string;
+  outline_color: string;
+  outline_width_pct?: number;
+  italic?: boolean;
+  letter_spacing_pct?: number;
+  shadow?: boolean;
+  glow_color?: string | null;
+  rotation_deg?: number;
 };
 
-function fitFontSize(text: string, maxWidthPx: number, startSizePx: number): number {
-  const approxW = (size: number) => text.length * size * 0.58;
-  let s = startSizePx;
-  while (approxW(s) > maxWidthPx && s > 14) s -= 2;
-  return s;
-}
-
-function buildTextSvg(opts: {
-  primaryText: string;
-  secondaryText?: string;
-  primaryFont: FontKey;
-  secondaryFont?: FontKey;
-  primaryColor: string;
-  outlineColor: string;
-  secondaryColor?: string;
-  effect: TextEffect;
+function renderLockupWithCanvas(opts: {
+  lockup: LockupLineRender[];
   placement: TextPlacement;
   canvasW: number;
   canvasH: number;
-  primaryRelativeSize?: number; // fraction of canvas height, default 0.2
-}): string {
-  const {
-    primaryText, secondaryText, primaryFont, secondaryFont,
-    primaryColor, outlineColor, secondaryColor,
-    effect, placement, canvasW, canvasH, primaryRelativeSize = 0.28,
-  } = opts;
+}): Buffer {
+  ensureFontsRegistered();
 
-  const targetPrimary = Math.round(canvasH * primaryRelativeSize);
-  const primarySize = fitFontSize(primaryText, placement.maxWidth, targetPrimary);
-  const stroke = Math.max(6, Math.round(primarySize * 0.11));
-  const secSize = secondaryText ? Math.round(primarySize * 0.42) : 0;
+  const { lockup, placement, canvasW, canvasH } = opts;
+  const canvas = createCanvas(canvasW, canvasH);
+  const ctx = canvas.getContext('2d');
+  ctx.textAlign = placement.anchor === 'start' ? 'left'
+                : placement.anchor === 'end' ? 'right'
+                : 'center';
+  ctx.textBaseline = 'alphabetic';
 
-  const pFamily = getFontFamily(primaryFont);
-  const sFamily = secondaryFont ? getFontFamily(secondaryFont) : pFamily;
+  // Pre-measure each line at its requested size; clamp to placement.maxWidth
+  type Sized = LockupLineRender & {
+    fontSizePx: number;
+    family: string;
+    measuredWidth: number;
+    actualHeight: number;
+  };
 
-  const pText = escapeXml(primaryText);
-  const sText = secondaryText ? escapeXml(secondaryText) : '';
+  const sized: Sized[] = lockup.map((line) => {
+    const family = getFontFamily(line.font);
+    const italic = line.italic ? 'italic ' : '';
+    let fontSizePx = Math.max(18, Math.round(canvasH * line.size_pct));
 
-  const yPrimary = placement.y;
-  const ySecondary = placement.y + primarySize * 0.85;
-
-  let effectDefs = '';
-  let primaryElements = '';
-  let secondaryElements = '';
-
-  switch (effect) {
-    case 'heavy-outline-shadow':
-      effectDefs = `<filter id="sh" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.9"/></filter>`;
-      primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${outlineColor}" stroke-width="${stroke}" stroke-linejoin="round" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#sh)">${pText}</text>
-      `;
-      break;
-
-    case 'neon-glow':
-      effectDefs = `
-        <filter id="glow1" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="8" result="b1"/>
-          <feMerge><feMergeNode in="b1"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-        <filter id="glow2" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="20" result="b2"/>
-          <feMerge><feMergeNode in="b2"/></feMerge>
-        </filter>
-      `;
-      primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#glow2)" opacity="0.8">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#glow1)">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="#FFFFFF">${pText}</text>
-      `;
-      if (secondaryText) {
-        secondaryElements = `
-          <text x="${placement.x}" y="${ySecondary}" text-anchor="${placement.anchor}" font-family="${sFamily}" font-size="${secSize}" font-style="italic" fill="${secondaryColor || primaryColor}" filter="url(#glow1)">${sText}</text>
-        `;
-      }
-      break;
-
-    case 'clean-outline':
-      effectDefs = `<filter id="sh2" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.6"/></filter>`;
-      primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${outlineColor}" stroke-width="${Math.max(3, stroke - 2)}" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#sh2)">${pText}</text>
-      `;
-      break;
-
-    case 'layered-multi': {
-      // Text has a shifted colored shadow layer under it
-      const shadowColor = outlineColor;
-      primaryElements = `
-        <text x="${placement.x + 8}" y="${yPrimary + 8}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${shadowColor}">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="#000000" stroke-width="${stroke}" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>
-      `;
-      if (secondaryText) {
-        secondaryElements = `
-          <text x="${placement.x}" y="${ySecondary}" text-anchor="${placement.anchor}" font-family="${sFamily}" font-size="${secSize}" font-weight="700" fill="${secondaryColor || primaryColor}" stroke="#000000" stroke-width="2" paint-order="stroke">${sText}</text>
-        `;
-      }
-      break;
+    // Shrink if the line overflows max width
+    let measured: number;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      ctx.font = `${italic}900 ${fontSizePx}px "${family}"`;
+      measured = ctx.measureText(line.text).width;
+      if (measured <= placement.maxWidth || fontSizePx <= 18) break;
+      fontSizePx -= 2;
     }
 
-    case 'elegant-drop-shadow':
-      effectDefs = `<filter id="esh" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="2" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.75"/></filter>`;
-      primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#esh)">${pText}</text>
-      `;
-      if (secondaryText) {
-        secondaryElements = `
-          <text x="${placement.x}" y="${ySecondary}" text-anchor="${placement.anchor}" font-family="${sFamily}" font-size="${secSize}" font-style="italic" fill="${secondaryColor || primaryColor}" filter="url(#esh)">${sText}</text>
-        `;
-      }
-      break;
+    // Approximate visual height (caps height ~ 0.72 * fontSize for display fonts)
+    const actualHeight = Math.round(fontSizePx * 0.78);
+    return {
+      ...line,
+      fontSizePx,
+      family,
+      measuredWidth: measured!,
+      actualHeight,
+    };
+  });
 
-    case 'bubble-thick-rounded':
-      primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${outlineColor}" stroke-width="${stroke + 2}" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>
-      `;
-      if (secondaryText) {
-        secondaryElements = `
-          <text x="${placement.x}" y="${ySecondary}" text-anchor="${placement.anchor}" font-family="${sFamily}" font-size="${secSize}" font-weight="700" fill="${secondaryColor || primaryColor}" stroke="${outlineColor}" stroke-width="3" stroke-linejoin="round" paint-order="stroke">${sText}</text>
-        `;
-      }
-      break;
+  // Compute total stack height with line gaps
+  const GAP = Math.round(canvasH * 0.012);
+  const totalHeight = sized.reduce((sum, s, i) => sum + s.actualHeight + (i > 0 ? GAP : 0), 0);
 
-    case 'chromatic-aberration':
-      primaryElements = `
-        <text x="${placement.x - 6}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="#FF00FF" opacity="0.75">${pText}</text>
-        <text x="${placement.x + 6}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="#00FFFF" opacity="0.75">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>
-      `;
-      break;
-
-    case 'glow-transparent':
-      effectDefs = `
-        <filter id="nglow" x="-50%" y="-50%" width="200%" height="200%">
-          <feGaussianBlur stdDeviation="6" result="b"/>
-          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
-        </filter>
-      `;
-      primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${primaryColor}" stroke-width="3" filter="url(#nglow)">${pText}</text>
-      `;
-      break;
-
-    default:
-      primaryElements = `<text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>`;
+  // Position the stack relative to placement.y. placement.y is the baseline
+  // anchor for single-line text; for the stack we adjust so the *visual block*
+  // sits where placement asks.
+  let topY: number;
+  if (placement.verticalAlign === 'top') {
+    topY = placement.y;
+  } else if (placement.verticalAlign === 'center') {
+    topY = placement.y - totalHeight / 2;
+  } else {
+    // 'bottom' — placement.y is the baseline of the bottom line; back up
+    topY = placement.y - totalHeight;
   }
 
-  return `<svg width="${canvasW}" height="${canvasH}" xmlns="http://www.w3.org/2000/svg"><defs>${effectDefs}</defs>${primaryElements}${secondaryElements}</svg>`;
+  // Render each line top-down
+  let y = topY;
+  for (const s of sized) {
+    y += s.actualHeight; // baseline of this line
+
+    ctx.save();
+
+    // Rotate around the line's anchor x, current baseline y
+    if (s.rotation_deg && s.rotation_deg !== 0) {
+      ctx.translate(placement.x, y);
+      ctx.rotate((s.rotation_deg * Math.PI) / 180);
+      ctx.translate(-placement.x, -y);
+    }
+
+    const italic = s.italic ? 'italic ' : '';
+    ctx.font = `${italic}900 ${s.fontSizePx}px "${s.family}"`;
+
+    // Letter spacing (Skia/canvas does not natively support letter-spacing
+    // CSS, so we render character-by-character if requested)
+    const letterSpacingPx = s.letter_spacing_pct
+      ? s.fontSizePx * s.letter_spacing_pct
+      : 0;
+
+    // Drop shadow (under everything)
+    if (s.shadow !== false) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.85)';
+      ctx.shadowBlur = Math.round(s.fontSizePx * 0.20);
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = Math.round(s.fontSizePx * 0.06);
+      ctx.fillStyle = s.fill;
+      drawTextWithSpacing(ctx, s.text, placement.x, y, letterSpacingPx, ctx.textAlign);
+      ctx.restore();
+    }
+
+    // Outer glow (rendered as a wide stroke under the text)
+    if (s.glow_color) {
+      ctx.save();
+      ctx.shadowColor = s.glow_color;
+      ctx.shadowBlur = Math.round(s.fontSizePx * 0.45);
+      ctx.lineWidth = Math.round(s.fontSizePx * 0.10);
+      ctx.strokeStyle = s.glow_color;
+      strokeTextWithSpacing(ctx, s.text, placement.x, y, letterSpacingPx, ctx.textAlign);
+      ctx.restore();
+    }
+
+    // Outline stroke
+    const outlinePct = s.outline_width_pct ?? 0.08;
+    const strokeWidth = Math.max(3, Math.round(s.fontSizePx * outlinePct));
+    ctx.strokeStyle = s.outline_color;
+    ctx.lineWidth = strokeWidth;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.miterLimit = 2;
+    strokeTextWithSpacing(ctx, s.text, placement.x, y, letterSpacingPx, ctx.textAlign);
+
+    // Fill on top
+    ctx.fillStyle = s.fill;
+    drawTextWithSpacing(ctx, s.text, placement.x, y, letterSpacingPx, ctx.textAlign);
+
+    ctx.restore();
+
+    y += GAP;
+  }
+
+  return canvas.toBuffer('image/png');
 }
+
+// Helper: draw text with manual letter-spacing (canvas has no letterSpacing API)
+function drawTextWithSpacing(
+  ctx: SKRSContext2D,
+  text: string,
+  x: number,
+  y: number,
+  spacing: number,
+  align: CanvasTextAlign,
+) {
+  if (!spacing) {
+    ctx.fillText(text, x, y);
+    return;
+  }
+  const widths = [...text].map((ch) => ctx.measureText(ch).width);
+  const total = widths.reduce((a, b) => a + b, 0) + spacing * (text.length - 1);
+  let cursor =
+    align === 'left' ? x
+    : align === 'right' ? x - total
+    : x - total / 2;
+  for (let i = 0; i < text.length; i++) {
+    ctx.fillText(text[i], cursor, y);
+    cursor += widths[i] + spacing;
+  }
+}
+
+function strokeTextWithSpacing(
+  ctx: SKRSContext2D,
+  text: string,
+  x: number,
+  y: number,
+  spacing: number,
+  align: CanvasTextAlign,
+) {
+  if (!spacing) {
+    ctx.strokeText(text, x, y);
+    return;
+  }
+  const widths = [...text].map((ch) => ctx.measureText(ch).width);
+  const total = widths.reduce((a, b) => a + b, 0) + spacing * (text.length - 1);
+  let cursor =
+    align === 'left' ? x
+    : align === 'right' ? x - total
+    : x - total / 2;
+  for (let i = 0; i < text.length; i++) {
+    ctx.strokeText(text[i], cursor, y);
+    cursor += widths[i] + spacing;
+  }
+}
+
 
 // ---------------------------------------------------------------------------
 // Subject placement per layout
@@ -954,14 +665,10 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
   const textFill = pickColor(palette, 0, '#FFFFFF');
   const textOutline = pickColor(palette, 1, '#000000');
 
-  // Build text — using canvas (Resvg can't reliably render varied fonts)
+  // Build text — lockup renderer draws each styled line independently
   const textPlacement = pickTextPlacement(template, positioned.map(p => p.bbox));
-  const textPng = renderTextWithCanvas({
-    primaryText: input.text_primary,
-    primaryFont: template.primary_font,
-    primaryColor: textFill,
-    outlineColor: textOutline,
-    effect: template.text_effect,
+  const textPng = renderLockupWithCanvas({
+    lockup: input.lockup,
     placement: textPlacement,
     canvasW: CANVAS_W,
     canvasH: CANVAS_H,
