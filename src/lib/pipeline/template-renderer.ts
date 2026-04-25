@@ -646,25 +646,45 @@ async function layoutSplitDiff(subjects: Buffer[], rimColor: string): Promise<Po
 // Text placement per template (which corner/zone)
 // ---------------------------------------------------------------------------
 
+/**
+ * Per-layout exclusion configuration.
+ * Controls how much of each subject's bounding box counts as "occupied" for
+ * text-placement purposes, and whether overlapping the occupied zone is
+ * acceptable when no clean candidate is available.
+ *
+ * Exported so background-generation passes (algorithmic backgrounds,
+ * frame_saturated) can read the same exclusion data and avoid placing
+ * decorative elements over subjects.
+ */
+export type ExclusionConfig = {
+  /** Fraction of bbox height (from top) treated as occupied. 0.0-1.0. */
+  bodyRatio: number;
+  /** If true, overlapping the occupied zone is acceptable as the design intent. */
+  allowOverlap: boolean;
+};
+
+const EXCLUSION_BY_LAYOUT: Record<string, ExclusionConfig> = {
+  // One tall figure - text should be well clear of head AND torso.
+  single:        { bodyRatio: 0.85, allowOverlap: false },
+  // Two flanking figures - center channel is the target, torsos are off-limits.
+  mirror:        { bodyRatio: 0.65, allowOverlap: false },
+  // Three figures fill the bottom - top band is the only safe zone.
+  'triple-diff': { bodyRatio: 0.95, allowOverlap: false },
+  // Split layout - center channel + bottom band, most of frame is occupied.
+  'split-diff':  { bodyRatio: 0.70, allowOverlap: false },
+  // Princess Mindfuck-style - text deliberately overlaps inner bodies.
+  'pair-close':  { bodyRatio: 0.40, allowOverlap: true  },
+};
+
+const DEFAULT_EXCLUSION: ExclusionConfig = { bodyRatio: 0.85, allowOverlap: false };
+
+export function getExclusionConfig(layout: string): ExclusionConfig {
+  return EXCLUSION_BY_LAYOUT[layout] ?? DEFAULT_EXCLUSION;
+}
+
 function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number; top: number; right: number; bottom: number }[]): TextPlacement {
   const pad = Math.round(CANVAS_H * 0.06);
-
-  // A subject "occupies" roughly the top 75% of its bounding box (head + torso).
-  // Only the very top (head) is most important to avoid, but to be safe we treat the whole bbox as occupied.
-  const occupiedBands = subjectBoxes.map((b) => ({
-    top: b.top,
-    bottom: b.bottom,
-    left: b.left,
-    right: b.right,
-  }));
-
-  // Horizontal band conflict check: does any subject bbox occupy the vertical range [yTop, yBottom]
-  // AND overlap with the horizontal range [xLeft, xRight]?
-  const overlapsSubject = (yTop: number, yBottom: number, xLeft: number, xRight: number) => {
-    return occupiedBands.some((b) =>
-      b.top < yBottom && b.bottom > yTop && b.left < xRight && b.right > xLeft
-    );
-  };
+  const exclusion = getExclusionConfig(template.layout);
 
   // Find a SAFE text zone by checking candidate bands in order of preference
   const textHeight = Math.round(CANVAS_H * 0.28); // estimated text height (matches 28% size)
@@ -726,18 +746,17 @@ function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number;
       ];
   }
 
-  // Pick the first candidate whose text box doesn't overlap subjects' heads specifically.
-  // Head = top 45% of bbox. We only want to avoid OVERLAP WITH HEADS, not entire body,
-  // because mild body overlap can be OK in some layouts.
-  const headZones = subjectBoxes.map((b) => ({
+  // Build per-layout exclusion zones from each subject's bbox.
+  // bodyRatio determines how far down from the top of the bbox is "off limits".
+  const exclusionZones = subjectBoxes.map((b) => ({
     top: b.top,
-    bottom: b.top + (b.bottom - b.top) * 0.45,
+    bottom: b.top + (b.bottom - b.top) * exclusion.bodyRatio,
     left: b.left,
     right: b.right,
   }));
 
-  const overlapsHead = (yTop: number, yBottom: number, xLeft: number, xRight: number) => {
-    return headZones.some((hz) =>
+  const overlapsExclusion = (yTop: number, yBottom: number, xLeft: number, xRight: number) => {
+    return exclusionZones.some((hz) =>
       hz.top < yBottom && hz.bottom > yTop && hz.left < xRight && hz.right > xLeft
     );
   };
@@ -749,12 +768,14 @@ function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number;
     const xLeft = c.anchor === 'start' ? c.x : c.anchor === 'end' ? c.x - c.maxWidth : c.x - c.maxWidth / 2;
     const xRight = xLeft + c.maxWidth;
 
-    if (!overlapsHead(yTop, yBottom, xLeft, xRight)) {
+    if (!overlapsExclusion(yTop, yBottom, xLeft, xRight)) {
       return { x: c.x, y: c.y, anchor: c.anchor, maxWidth: c.maxWidth, verticalAlign: 'bottom' };
     }
   }
 
-  // Fallback: use first candidate even if it overlaps
+  // No clean candidate found.
+  // For layouts where overlap IS the intended design (e.g. pair-close), this is the happy path.
+  // For others, this is a fallback - the renderer never crashes, but the result may crowd the subject.
   const fb = candidates[0];
   return { x: fb.x, y: fb.y, anchor: fb.anchor, maxWidth: fb.maxWidth, verticalAlign: 'bottom' };
 }
