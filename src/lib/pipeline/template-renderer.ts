@@ -582,13 +582,13 @@ function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number;
     const xRight = xLeft + c.maxWidth;
 
     if (!overlapsHead(yTop, yBottom, xLeft, xRight)) {
-      return { x: c.x, y: c.y, anchor: c.anchor, maxWidth: c.maxWidth };
+      return { x: c.x, y: c.y, anchor: c.anchor, maxWidth: c.maxWidth, verticalAlign: 'bottom' };
     }
   }
 
   // Fallback: use first candidate even if it overlaps
   const fb = candidates[0];
-  return { x: fb.x, y: fb.y, anchor: fb.anchor, maxWidth: fb.maxWidth };
+  return { x: fb.x, y: fb.y, anchor: fb.anchor, maxWidth: fb.maxWidth, verticalAlign: 'bottom' };
 }
 
 // ---------------------------------------------------------------------------
