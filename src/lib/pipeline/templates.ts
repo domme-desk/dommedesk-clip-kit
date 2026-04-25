@@ -25,9 +25,11 @@ export type TemplateId =
   | 'handwritten-casual'
   | 'cursive-elegance'
   | 'romantic-script'
-  | 'casual-handwritten-bold';
+  | 'casual-handwritten-bold'
+  | 'pair-pose-script'
+  | 'pair-pose-bold';
 
-export type LayoutType = 'single' | 'mirror' | 'triple-diff' | 'split-diff';
+export type LayoutType = 'single' | 'mirror' | 'triple-diff' | 'split-diff' | 'pair-close';
 
 export type BackgroundStyle =
   | 'flat-saturated'
@@ -298,6 +300,37 @@ export const TEMPLATES: Record<TemplateId, TemplateSpec> = {
     supports_secondary_text: false,
     claude_guidance: 'Caveat hand-written as the BIG main title with heavy outline so it pops. Energetic playful feel. Use for brat/flirty/playful clips.',
   },
+  'pair-pose-script': {
+    id: 'pair-pose-script',
+    name: 'Pair Pose Script',
+    feel: 'two angles of you with elegant script title woven between',
+    layout: 'pair-close',
+    frames_needed: 2,
+    primary_font: 'pinyon-script',
+    background: 'environmental-bokeh',
+    text_effect: 'elegant-drop-shadow',
+    default_palette: ['#FFD700', '#000000', '#FF1493', '#9D4EDD'],
+    best_for_tags: ['princess', 'goddess', 'angelic', 'tease', 'sensual', 'goon', 'mindfuck', 'hypno'],
+    text_primary_max_words: 4,
+    supports_secondary_text: false,
+    claude_guidance: 'Two-pose pair composition. Pinyon Script as flowing main title centered between the two figures. Use for goddess/princess/mindfuck themes that imply duality.',
+  },
+  'pair-pose-bold': {
+    id: 'pair-pose-bold',
+    name: 'Pair Pose Bold',
+    feel: 'two angles of you with chunky bubble title in the middle',
+    layout: 'pair-close',
+    frames_needed: 2,
+    primary_font: 'fredoka-one',
+    background: 'flat-saturated',
+    text_effect: 'bubble-thick-rounded',
+    default_palette: ['#FFFFFF', '#000000', '#FF1493', '#9D4EDD'],
+    best_for_tags: ['playful', 'tease', 'brat', 'flirty', 'fun', 'duality', 'twins'],
+    text_primary_max_words: 4,
+    supports_secondary_text: false,
+    claude_guidance: 'Two-pose pair composition with chunky Fredoka One bubble text centered between the figures. Energetic playful feel.',
+  },
+
 
   'script-overlay': {
     id: 'script-overlay',

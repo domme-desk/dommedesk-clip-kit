@@ -507,8 +507,8 @@ function postProcessSelections(
   //   - 1 chunky/dom block template (Anton, Bebas Neue, Alfa Slab)
   // The other 3 are whatever Claude picked.
   if (selections.length === 6) {
-    const SCRIPT_TEMPLATES: TemplateId[] = ['cursive-elegance', 'romantic-script', 'casual-handwritten-bold', 'neon-script', 'script-overlay', 'handwritten-casual'];
-    const GLAM_TEMPLATES: TemplateId[] = ['glam-serif', 'cute-bubble', 'disco-retro'];
+    const SCRIPT_TEMPLATES: TemplateId[] = ['cursive-elegance', 'romantic-script', 'casual-handwritten-bold', 'neon-script', 'script-overlay', 'handwritten-casual', 'pair-pose-script'];
+    const GLAM_TEMPLATES: TemplateId[] = ['glam-serif', 'cute-bubble', 'disco-retro', 'pair-pose-bold'];
     const BLOCK_TEMPLATES: TemplateId[] = ['big-block', 'hero-pose', 'slab-menace', 'crossed-layered'];
 
     const has = (cat: TemplateId[]) => selections.some((s) => cat.includes(s.template_id));
@@ -627,6 +627,7 @@ export async function selectTemplatesForClip(
 
   const content: VisionContent[] = [];
 
+  console.log(`[selectTemplatesForClip] Loaded ${styleExamples.length} thumbnail style examples and ${descriptionExamples.length} description examples`);
   if (styleExamples.length > 0) {
     content.push({ type: 'text', text: 'Prior thumbnail examples for this creator (visual grammar reference):' });
     for (const ex of styleExamples.slice(0, 8)) {
@@ -687,7 +688,7 @@ RULES:
    This ensures the user always gets a mix of commanding block-font thumbnails AND softer/glam/script-font options to choose from. Even harsh clips benefit from having a sexier-font option in the batch.
 
    **Three DIFFERENT templates, covering DIFFERENT layout types.**
-   Available layout types: single, mirror, triple-diff, split-diff.
+   Available layout types: single, mirror, triple-diff, split-diff, pair-close (two different poses, side by side with slight overlap).
    Your six picks must include AT LEAST 3 distinct layout types. At minimum: 2 single + 1 mirror + 1 triple-diff + 2 any. Six 'single' templates is NOT acceptable.
 
 2. **Text is the clip TITLE, styled per template.**

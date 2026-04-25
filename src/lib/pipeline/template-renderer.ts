@@ -668,6 +668,50 @@ async function layoutMirror(subject: Buffer, rimColor: string): Promise<Position
   ];
 }
 
+
+async function layoutPairClose(subjects: Buffer[], rimColor: string): Promise<PositionedSubject[]> {
+  // 2 different figures, both at ~85% canvas height, slightly overlapping at inner edges
+  // Left figure positioned at left-center, right figure at right-center
+  // Inner edges should overlap by ~5-8% to create "touching" feel
+  if (subjects.length < 2) {
+    // Fallback to single layout if only 1 subject available
+    return layoutSingle(subjects[0], rimColor);
+  }
+
+  const positioned: PositionedSubject[] = [];
+
+  for (let i = 0; i < 2; i++) {
+    const scaled = await sharp(subjects[i])
+      .resize({ height: Math.round(CANVAS_H * 0.92), fit: 'inside' })
+      .toBuffer();
+    const meta = await sharp(scaled).metadata();
+    const w = meta.width || 0;
+    const h = meta.height || 0;
+
+    // Left figure: anchored so its right edge lands at ~52% of canvas
+    // Right figure: anchored so its left edge lands at ~48% of canvas
+    // This creates an 8% overlap at center
+    let left: number;
+    if (i === 0) {
+      // Left figure — push right so right edge is at 52% W
+      left = Math.round(CANVAS_W * 0.52) - w;
+    } else {
+      // Right figure — left edge at 48% W
+      left = Math.round(CANVAS_W * 0.48);
+    }
+
+    // Clamp to canvas bounds
+    left = Math.max(0, Math.min(left, CANVAS_W - w));
+
+    // Top: leave 6% headroom, anchor bottom to canvas bottom
+    const top = Math.max(Math.round(CANVAS_H * 0.06), CANVAS_H - h);
+
+    positioned.push(await positionedFrom(scaled, left, top, rimColor, 0.55));
+  }
+
+  return positioned;
+}
+
 async function layoutTripleDiff(subjects: Buffer[], rimColor: string): Promise<PositionedSubject[]> {
   // Three DIFFERENT subjects: center biggest, sides smaller, with overlap
   const centerTarget = await sharp(subjects[0]).resize({ height: Math.round(CANVAS_H * 0.98), fit: 'inside' }).toBuffer();
@@ -784,6 +828,15 @@ function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number;
       ];
       break;
 
+    case 'pair-close':
+      candidates = [
+        // Center between/over the two figures — text overlaps the inner bodies
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.55), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.55), label: 'pair-center' },
+        // Fallback: top band above both heads
+        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.14), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.85), label: 'pair-top' },
+      ];
+      break;
+
     default:
       candidates = [
         { x: CANVAS_W / 2, y: CANVAS_H - pad, anchor: 'middle', maxWidth: CANVAS_W - pad * 2, label: 'default-bottom' },
@@ -889,6 +942,7 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
     case 'mirror': positioned = await layoutMirror(preppedSubjects[0], rimColor); break;
     case 'triple-diff': positioned = await layoutTripleDiff(preppedSubjects, rimColor); break;
     case 'split-diff': positioned = await layoutSplitDiff(preppedSubjects, rimColor); break;
+    case 'pair-close': positioned = await layoutPairClose(preppedSubjects, rimColor); break;
     default: positioned = await layoutSingle(preppedSubjects[0], rimColor);
   }
 
