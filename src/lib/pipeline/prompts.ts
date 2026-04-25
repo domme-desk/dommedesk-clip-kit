@@ -795,80 +795,92 @@ Accent brand color: ${accent}
 AVAILABLE TEMPLATES:
 ${templatesForClaude()}
 
-TASK: Select 6 DIFFERENT templates for this clip (one per variant) and define the text + palette for each.
+TASK: Select 6 DIFFERENT templates for this clip and design the LOCKUP + palette + background for each.
 
 RULES:
 
 1. **Six DIFFERENT templates that CAPTURE THE BRAND'S VISUAL LANGUAGE (priority #1).**
+   First and foremost: study the reference thumbnails above. Pick 6 different template_ids whose layouts best match the brand's established visual signature.
+   - If references show pair-close layouts a lot, use pair-close more
+   - If single-figure dominates, lean single
+   - Don't force layout variety against brand voice
 
-   First and foremost: study the reference thumbnails above. Pick 6 different template_ids whose font/layout/style choices best match the brand's established visual signature.
+2. **LOCKUP — typography is now a stack of styled lines.**
+   Each variant returns a "lockup" array of 1-5 lines (1-2 is most common, 3 is dramatic, 4-5 is RARE).
+   Each line picks its OWN font, size, fill color, outline color, italic, shadow, glow, rotation.
 
-   Soft variety guidelines (apply ONLY where they don't fight the brand reference):
-   - Aim for 2-4 distinct primary fonts across the 6 templates
-   - Aim for 2-3 distinct layout types
-   - If the brand uses a lot of cursive scripts, lean into the script set (cursive-elegance, romantic-script, neon-script, script-overlay, casual-handwritten-bold)
-   - If the brand uses chunky bubble fonts, lean into bubble templates (cute-bubble, pair-pose-bold)
-   - If the brand uses glam serifs, lean into glam-serif and similar
+   The lockup REPLACES the old text_primary/text_secondary fields entirely. Do not return text_primary or text_secondary — only return "lockup" as an array.
 
-   The references override generic variety rules. If references show 5 cursive thumbnails, don't force a chunky sans into the batch just for "variety" — capture what the brand actually looks like.
+   AVAILABLE FONTS (FontKey values you may use):
+   - Heavy display: 'anton', 'bebas-neue', 'bowlby-one', 'fredoka-one', 'alfa-slab-one', 'rubik-mono-one', 'passion-one', 'abril-fatface', 'monoton'
+   - Heavy sans-black: 'montserrat-black'
+   - Elegant serif: 'playfair-display-black', 'yeseva-one'
+   - Script (use sparingly, larger size, thicker outline, italic:true): 'dancing-script', 'pacifico', 'pinyon-script', 'sacramento', 'caveat'
+   - Tech/futuristic: 'orbitron'
+   - Handwritten/marker: 'permanent-marker'
 
-   Available layout types: single, mirror, triple-diff, split-diff, pair-close. Pick layouts that match what the references show — if they're mostly pair-close (two figures), use that more; if they're mostly single, use single. Don't force layout variety against brand voice.
+   LOCKUP DESIGN RULES:
+   - 1-2 lines is default. Use 3 only when you have primary + accent + tag structure.
+   - Sum of size_pct across all lines should be 0.20-0.45 (lockup fills 20-45% of vertical canvas).
+   - The BIGGEST line is the hook. Smaller lines support it.
+   - Mix styles for contrast: heavy display + script accent, or all-caps display + italicized rejoinder.
+   - ALL CAPS for display fonts. Mixed case OK for scripts and serifs.
+   - fill is from the punchy palette: white #FFFFFF, yellow #FFEB3B, gold-yellow #FFC107, orange #FF6B00, red #FF1744, crimson #DC143C, hot-pink #FF1493, magenta #FF00FF, cyan #00F5FF, electric-blue #1E90FF, royal-blue #3F51FF, lime #39FF14, neon-green #00FF88, electric-purple #9D00FF, or black #000000.
+   - outline_color is almost always #000000 (black). For black fills use #FFFFFF (white) outline.
+   - rotation_deg between -8 and 8 for accent/script lines that should feel scrawled or stamped.
+   - fill_box is optional — a colored rectangle BEHIND a single accent word (signature element). Use it on at most ONE line per lockup. Pink (#FF1493), red (#FF1744), or hot magenta (#FF00FF) are classic box colors.
 
-2. **Text is the clip TITLE, styled per template.**
-   - Primary text (text_primary) = the clip's title, normalized:
-     * ALL CAPS
-     * If title > 5 words, shorten to a punchy 2-5 word version that keeps the core concept
-       (e.g. 'A Task for Chastity Slave' → 'CHASTITY TASK' or 'LOCKED & OBEDIENT')
-     * Otherwise use the title as-is in ALL CAPS
-   - Same punchy title across all 3 variants — styling differs, meaning stays consistent
-   - text_secondary: optional short accent word (1-3 words) if template supports it, else null. Examples: 'Obey.', 'For Me.', 'Forever.'
+   Lockup examples (these mirror real high-performing creator thumbnails):
+   * "Locked Up & Ruined" — heavy display + script accent:
+     [{"text":"LOCKED UP","font":"bowlby-one","size_pct":0.20,"fill":"#FFFFFF","outline_color":"#000000"},
+      {"text":"& Ruined","font":"pinyon-script","size_pct":0.16,"fill":"#FF1493","outline_color":"#000000","italic":true,"rotation_deg":-3}]
+   * "Born Again Virgin" — display word + tagged accent box:
+     [{"text":"BORN AGAIN","font":"anton","size_pct":0.22,"fill":"#FFFFFF","outline_color":"#000000"},
+      {"text":"VIRGIN","font":"anton","size_pct":0.13,"fill":"#FFFFFF","outline_color":"#FF1493","rotation_deg":-3,"fill_box":{"color":"#FF1493","padding_x_pct":0.30,"padding_y_pct":0.12,"rotation_deg":-3}}]
+   * "Goddess of Gooning" — three-line vertical stack:
+     [{"text":"GODDESS","font":"playfair-display-black","size_pct":0.18,"fill":"#FFEB3B","outline_color":"#000000"},
+      {"text":"OF","font":"playfair-display-black","size_pct":0.10,"fill":"#FFEB3B","outline_color":"#000000"},
+      {"text":"GOONING","font":"playfair-display-black","size_pct":0.18,"fill":"#FFEB3B","outline_color":"#000000"}]
+   * "Trying Not to Relapse?" — stacked display + box-tagged accent:
+     [{"text":"TRYING","font":"anton","size_pct":0.16,"fill":"#FFFFFF","outline_color":"#000000"},
+      {"text":"NOT TO","font":"anton","size_pct":0.10,"fill":"#FFFFFF","outline_color":"#000000"},
+      {"text":"RELAPSE?","font":"anton","size_pct":0.16,"fill":"#FFFFFF","outline_color":"#000000","fill_box":{"color":"#FF1744"}}]
+   * "Princess Mindfuck" — display + flowing script:
+     [{"text":"PRINCESS","font":"montserrat-black","size_pct":0.13,"fill":"#FFFFFF","outline_color":"#000000"},
+      {"text":"Mindfuck","font":"sacramento","size_pct":0.20,"fill":"#FFEB3B","outline_color":"#000000","italic":true}]
+   * Single-line bold (when copy is one strong word):
+     [{"text":"OBEY","font":"anton","size_pct":0.30,"fill":"#FFFFFF","outline_color":"#000000"}]
 
-3. **Frames:** for templates needing multiple frames (triple-diff, split-diff), use DIFFERENT frame indices (0, 1, 2).
+   COPY RULES:
+   - 1-4 words per line, 5 max. Punchy, hot, in the creator's voice.
+   - Each variant different angle: command / tease / consequence
+   - The lockup IS the title, broken into styled stack pieces. If clip title is "Chastity Task", a 1-line lockup might be [{"text":"CHASTITY TASK", font:"anton", size_pct:0.22, ...}]; a 2-line lockup might split it into [{"text":"CHASTITY"...},{"text":"TASK"...}] with different fonts/colors.
+   - Each variant should have its OWN lockup design — Claude tunes typography to each template + layout + mood.
+
+3. **Frames:** for templates needing multiple frames (triple-diff, split-diff, pair-close), use DIFFERENT frame indices (0, 1, 2).
 
 4. **Palette — MUST POP.**
    - 4 hex colors in order: [text_fill, text_outline, bg_primary, bg_accent]
-   - text_fill: BRIGHT and high-contrast. White (#FFFFFF), hot pink (#FF1493), bright yellow (#FFEB3B), or cyan (#00F5FF). NEVER the same hue family as the background.
-   - text_outline: BLACK (#000000) 90% of the time. Rare exceptions: use a strong complementary dark like deep purple (#2D0A3D) only if background is black.
-   - bg_primary, bg_accent: brand colors (${primary}, ${accent}) or a specific color pair from the template's default_palette.
-   - Rule of thumb: text needs to be legible at 120px wide (YouTube thumbnail size). If the text color is similar to the background color, the thumbnail FAILS.
+   - text_fill: bright punchy color (white, hot pink, yellow, cyan). NEVER same hue as bg.
+   - text_outline: BLACK (#000000) 90% of the time. White (#FFFFFF) only when text_fill is black.
+   - bg_primary, bg_accent: brand colors (${primary}, ${accent}) or template's default_palette.
+   - Note: the lockup itself carries per-line colors. The palette here is for system-level palette validation; bg_primary/bg_accent set the variant's BACKGROUND.
 
 5. **Background concept — MIX STYLES ACROSS THE 6 VARIANTS.**
-
    **CRITICAL MIX RULE (WILL BE VALIDATED):** Across the 6 variants, EXACTLY 3 MUST be "thematic scenes" (AI-generated environments with a real Flux prompt) and EXACTLY 3 MUST be "simple" (flat/gradient/spiral — algorithmic, no AI).
 
-If you return anything other than 3+3, the system will auto-adjust. To comply: mark exactly 3 variants as "simple" (background_concept='simple', background_prompt=null) and exactly 3 as thematic (with real scene prompts). Do this deliberately.
+   To comply: mark exactly 3 variants as "simple" (background_concept='simple', background_prompt=null) and exactly 3 as thematic (with real scene prompts).
 
-   - For **thematic scene variants**: fill in background_concept (2-5 words) AND background_prompt (1-2 sentences Flux-ready).
-   - For **simple variants**: set background_concept to the literal word 'simple' AND set background_prompt to null or empty string. The template's default algorithmic background will be used.
+   **Rules for thematic variants:**
+   - Match emotional vibe of the clip (tags, title, description)
+   - Examples: hypno → "heavenly cloud dreamscape" / chastity → "royal throne room velvet" / tease → "moonlit silk bedroom" / humiliation → "neon lit club interior" / angel → "heavenly clouds golden sunlight"
 
-   This gives the user a mix of polished thematic thumbnails and clean, high-contrast simple ones — different use cases, different vibes.
-
-   **Rules for the thematic variants:**
-   Write a short concept name (background_concept, 2-5 words) AND a full prompt (background_prompt, 1-2 sentences) for the scenic background behind the subject.
-
-   Rules for background_concept:
-   - Match the thematic/emotional vibe of the clip (tags, title, description)
-   - Examples by tag:
-     * hypno/mindfuck/goon → "heavenly cloud dreamscape" / "swirling psychedelic mist" / "deep cosmic void with stars"
-     * chastity/findom/command → "royal throne room velvet" / "dark dungeon with warm torchlight" / "gold-dripping luxury chamber"
-     * tease/sensual/worship → "moonlit silk bedroom" / "champagne bubbles and roses" / "dark boudoir with rose petals"
-     * humiliation/SPH/loser → "neon lit club interior" / "spotlight stage empty" / "bright pink pop-art backdrop"
-     * foot/ass/breast worship → "silk draped luxury close-up" / "velvet cushioned decor" / "marble columns and silk"
-     * intimate/soft/GFE → "candlelit bedroom with rose petals" / "warm sunset through curtains" / "soft pink satin sheets"
-     * bratty/playful → "bubblegum confetti explosion" / "pink cloud candy sky" / "neon pink studio backdrop"
-     * angel/princess/goddess → "heavenly clouds golden sunlight" / "marble temple with gold accents" / "ethereal sky with light rays"
-     * devil/demon → "smoky red hellscape" / "dark throne with red velvet" / "moody dark chamber with red candles"
-
-   Rules for background_prompt (Flux-ready):
+   **Rules for background_prompt (Flux-ready):**
    - DESCRIBE THE SCENE ONLY. No people. No kink objects. No text. No watermarks.
    - Include mood lighting, atmosphere, color palette.
-   - Keep it PG-13 — the scene itself must pass a content safety filter.
-   - Examples:
-     * "Soft fluffy white clouds in a bright blue sky, warm golden sunlight streaming through, dreamy ethereal atmosphere, high-end photography"
-     * "Dark elegant throne room with deep purple velvet drapes, warm amber candlelight, luxurious atmosphere, cinematic lighting"
-     * "Gold confetti and dollar bills falling through the air against a black background, dramatic studio lighting, opulent luxury"
+   - Keep it PG-13 — must pass content safety filter.
 
-6. Reasoning: 1 sentence per variant explaining why this template+palette+background fits.
+6. **Reasoning:** 1 sentence per variant explaining why this template + lockup + palette + background fits.
 
 Return ONLY valid JSON. Start with { and end with }. No prose, no explanation, no markdown code fences, no additional text before or after:
 
@@ -877,13 +889,14 @@ Return ONLY valid JSON. Start with { and end with }. No prose, no explanation, n
     {
       "variant_index": 1,
       "template_id": "<one of the template ids>",
-      "text_primary": "<2-5 word hook>",
-      "text_secondary": "<optional, or null>",
+      "lockup": [
+        {"text":"<words>","font":"<FontKey>","size_pct":0.22,"fill":"#hex","outline_color":"#000000"}
+      ],
       "palette": ["#text_fill", "#text_outline", "#bg_primary", "#bg_accent"],
       "frame_indices": [<0|1|2>, ...],
-      "background_concept": "<2-5 words naming the scene>",
-      "background_prompt": "<1-2 sentences Flux prompt for thematic variants, OR null for simple variants>",
-      "reasoning": "<1 sentence why this template + copy fits this clip>"
+      "background_concept": "<2-5 words OR 'simple'>",
+      "background_prompt": "<1-2 sentences Flux prompt for thematic, OR null for simple>",
+      "reasoning": "<1 sentence why this template + lockup fits this clip>"
     }
   ]
 }`,
