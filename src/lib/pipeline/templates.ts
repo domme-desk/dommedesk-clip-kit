@@ -22,7 +22,10 @@ export type TemplateId =
   | 'disco-retro'
   | 'script-overlay'
   | 'slab-menace'
-  | 'handwritten-casual';
+  | 'handwritten-casual'
+  | 'cursive-elegance'
+  | 'romantic-script'
+  | 'casual-handwritten-bold';
 
 export type LayoutType = 'single' | 'mirror' | 'triple-diff' | 'split-diff';
 
@@ -250,6 +253,52 @@ export const TEMPLATES: Record<TemplateId, TemplateSpec> = {
     supports_secondary_text: false,
     claude_guidance: 'Monoton vertical-stripe font with retro gradient. Best for playful vintage-vibe clips.',
   },
+  'cursive-elegance': {
+    id: 'cursive-elegance',
+    name: 'Cursive Elegance',
+    feel: 'flowing romantic script as the dominant title',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'pinyon-script',
+    background: 'environmental-bokeh',
+    text_effect: 'elegant-drop-shadow',
+    default_palette: ['#FFD700', '#000000', '#FF1493', '#9D4EDD'],
+    best_for_tags: ['princess', 'goddess', 'angelic', 'luxury', 'elegant', 'tease'],
+    text_primary_max_words: 4,
+    supports_secondary_text: false,
+    claude_guidance: 'Pinyon Script as the BIG flowing main title. Looks like a luxury wedding invitation. Use for goddess/princess/angelic clip themes.',
+  },
+  'romantic-script': {
+    id: 'romantic-script',
+    name: 'Romantic Script',
+    feel: 'sweeping cursive that fills the canvas',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'sacramento',
+    background: 'pastel-bright',
+    text_effect: 'elegant-drop-shadow',
+    default_palette: ['#FFFFFF', '#FF1493', '#FFB3D9', '#FF69B4'],
+    best_for_tags: ['intimate', 'gfe', 'romantic', 'sensual', 'tease', 'sweet'],
+    text_primary_max_words: 4,
+    supports_secondary_text: false,
+    claude_guidance: 'Sacramento cursive as the BIG flowing main title. Hand-lettered romantic feel. Use for GFE/intimate/sensual clips.',
+  },
+  'casual-handwritten-bold': {
+    id: 'casual-handwritten-bold',
+    name: 'Casual Handwritten Bold',
+    feel: 'energetic personal handwriting as title',
+    layout: 'single',
+    frames_needed: 1,
+    primary_font: 'caveat',
+    background: 'flat-saturated',
+    text_effect: 'heavy-outline-shadow',
+    default_palette: ['#FFFFFF', '#000000', '#FF1493', '#9D4EDD'],
+    best_for_tags: ['playful', 'brat', 'tease', 'flirty', 'casual', 'gfe'],
+    text_primary_max_words: 5,
+    supports_secondary_text: false,
+    claude_guidance: 'Caveat hand-written as the BIG main title with heavy outline so it pops. Energetic playful feel. Use for brat/flirty/playful clips.',
+  },
+
   'script-overlay': {
     id: 'script-overlay',
     name: 'Script Overlay',

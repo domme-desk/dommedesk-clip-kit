@@ -16,10 +16,11 @@ export const CANVAS_H = 720;
 
 export type TemplateRenderInput = {
   template_id: TemplateId;
-  subject_urls: string[];          // 1, 2, or 3 cutout URLs (depends on template.frames_needed)
+  subject_urls: string[];
   text_primary: string;
   text_secondary?: string | null;
-  palette: string[];                // hex colors chosen by Claude (brand + template fallback)
+  palette: string[];
+  background_prompt?: string | null;  // Flux prompt; when present we AI-generate the bg, else algorithmic
   watermark_url?: string | null;
   watermark_position?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
 };
@@ -59,7 +60,7 @@ function renderSvgToPng(svg: string, width: number, height: number): Buffer {
     font: {
       fontBuffers: fonts.map((f) => f.buffer),
       loadSystemFonts: false,
-      defaultFontFamily: 'Anton',
+      defaultFontFamily: 'sans-serif',
     },
     background: 'rgba(0,0,0,0)',
   });
@@ -104,7 +105,33 @@ async function subjectRimLight(subject: Buffer, colorHex: string, intensity: num
 // Background generators (algorithmic, no AI model needed)
 // ---------------------------------------------------------------------------
 
-async function generateBackground(style: BackgroundStyle, palette: string[]): Promise<Buffer> {
+// ---------------------------------------------------------------------------
+// Thematic background generator (Flux with algorithmic fallback)
+// ---------------------------------------------------------------------------
+
+async function generateBackgroundThematic(
+  fluxPrompt: string,
+  style: BackgroundStyle,
+  palette: string[]
+): Promise<Buffer> {
+  // Try Flux first. On any error (NSFW, timeout, etc), fall back silently.
+  try {
+    const { generateBackground: fluxGenerate } = await import('@/lib/replicate');
+    // Reinforce the content-safety guardrails in the prompt itself
+    const safePrompt = `${fluxPrompt}. Photography, no people, no text, no watermarks. Cinematic lighting, atmospheric, high-end aesthetic.`;
+    const fluxUrl = await fluxGenerate(safePrompt, '16:9');
+    const res = await fetch(fluxUrl);
+    if (!res.ok) throw new Error(`Flux result fetch failed: ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    // Resize to canvas dimensions in case Flux returned non-exact size
+    return sharp(buf).resize(CANVAS_W, CANVAS_H, { fit: 'cover', position: 'center' }).png().toBuffer();
+  } catch (err) {
+    console.warn('[template-renderer] Flux background failed, falling back to algorithmic:', err instanceof Error ? err.message : err);
+    return generateBackgroundAlgorithmic(style, palette);
+  }
+}
+
+async function generateBackgroundAlgorithmic(style: BackgroundStyle, palette: string[]): Promise<Buffer> {
   // Palette convention from Claude: [text_fill, text_outline, bg_primary, bg_accent]
   // Backgrounds use indices 2 and 3.
   const c1 = pickColor(palette, 2, '#FF1493');
@@ -301,8 +328,8 @@ function buildTextSvg(opts: {
     case 'heavy-outline-shadow':
       effectDefs = `<filter id="sh" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="8" stdDeviation="12" flood-color="#000" flood-opacity="0.9"/></filter>`;
       primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="none" stroke="${outlineColor}" stroke-width="${stroke}" stroke-linejoin="round" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}" filter="url(#sh)">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${outlineColor}" stroke-width="${stroke}" stroke-linejoin="round" paint-order="stroke">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#sh)">${pText}</text>
       `;
       break;
 
@@ -318,9 +345,9 @@ function buildTextSvg(opts: {
         </filter>
       `;
       primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}" filter="url(#glow2)" opacity="0.8">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}" filter="url(#glow1)">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="#FFFFFF">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#glow2)" opacity="0.8">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#glow1)">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="#FFFFFF">${pText}</text>
       `;
       if (secondaryText) {
         secondaryElements = `
@@ -332,8 +359,8 @@ function buildTextSvg(opts: {
     case 'clean-outline':
       effectDefs = `<filter id="sh2" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#000" flood-opacity="0.6"/></filter>`;
       primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="none" stroke="${outlineColor}" stroke-width="${Math.max(3, stroke - 2)}" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}" filter="url(#sh2)">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${outlineColor}" stroke-width="${Math.max(3, stroke - 2)}" paint-order="stroke">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#sh2)">${pText}</text>
       `;
       break;
 
@@ -341,9 +368,9 @@ function buildTextSvg(opts: {
       // Text has a shifted colored shadow layer under it
       const shadowColor = outlineColor;
       primaryElements = `
-        <text x="${placement.x + 8}" y="${yPrimary + 8}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${shadowColor}">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="none" stroke="#000000" stroke-width="${stroke}" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}">${pText}</text>
+        <text x="${placement.x + 8}" y="${yPrimary + 8}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${shadowColor}">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="#000000" stroke-width="${stroke}" paint-order="stroke">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>
       `;
       if (secondaryText) {
         secondaryElements = `
@@ -356,7 +383,7 @@ function buildTextSvg(opts: {
     case 'elegant-drop-shadow':
       effectDefs = `<filter id="esh" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="2" dy="6" stdDeviation="8" flood-color="#000" flood-opacity="0.75"/></filter>`;
       primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}" filter="url(#esh)">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}" filter="url(#esh)">${pText}</text>
       `;
       if (secondaryText) {
         secondaryElements = `
@@ -367,8 +394,8 @@ function buildTextSvg(opts: {
 
     case 'bubble-thick-rounded':
       primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="none" stroke="${outlineColor}" stroke-width="${stroke + 2}" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${outlineColor}" stroke-width="${stroke + 2}" stroke-linejoin="round" stroke-linecap="round" paint-order="stroke">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>
       `;
       if (secondaryText) {
         secondaryElements = `
@@ -379,9 +406,9 @@ function buildTextSvg(opts: {
 
     case 'chromatic-aberration':
       primaryElements = `
-        <text x="${placement.x - 6}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="#FF00FF" opacity="0.75">${pText}</text>
-        <text x="${placement.x + 6}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="#00FFFF" opacity="0.75">${pText}</text>
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}">${pText}</text>
+        <text x="${placement.x - 6}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="#FF00FF" opacity="0.75">${pText}</text>
+        <text x="${placement.x + 6}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="#00FFFF" opacity="0.75">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>
       `;
       break;
 
@@ -393,12 +420,12 @@ function buildTextSvg(opts: {
         </filter>
       `;
       primaryElements = `
-        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="none" stroke="${primaryColor}" stroke-width="3" filter="url(#nglow)">${pText}</text>
+        <text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="none" stroke="${primaryColor}" stroke-width="3" filter="url(#nglow)">${pText}</text>
       `;
       break;
 
     default:
-      primaryElements = `<text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}" font-weight="900" fill="${primaryColor}">${pText}</text>`;
+      primaryElements = `<text x="${placement.x}" y="${yPrimary}" text-anchor="${placement.anchor}" font-family="${pFamily}" font-size="${primarySize}"  fill="${primaryColor}">${pText}</text>`;
   }
 
   return `<svg width="${canvasW}" height="${canvasH}" xmlns="http://www.w3.org/2000/svg"><defs>${effectDefs}</defs>${primaryElements}${secondaryElements}</svg>`;
@@ -671,8 +698,10 @@ export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer
   const subjectBuffers = await Promise.all(input.subject_urls.map(fetchBuffer));
   const preppedSubjects = await Promise.all(subjectBuffers.map(prepSubject));
 
-  // Generate background
-  const backgroundBuf = await generateBackground(template.background, palette);
+  // Generate background — try Flux if we have a prompt, fall back to algorithmic
+  const backgroundBuf = input.background_prompt
+    ? await generateBackgroundThematic(input.background_prompt, template.background, palette)
+    : await generateBackgroundAlgorithmic(template.background, palette);
   const background = await sharp(backgroundBuf).modulate({ brightness: 0.92 }).toBuffer();
 
   // Layout subjects

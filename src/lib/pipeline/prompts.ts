@@ -1,4 +1,5 @@
 import { anthropic, CLAUDE_MODEL } from '@/lib/anthropic';
+import type { TemplateId } from './templates';
 import { TEMPLATES, templatesForClaude, type TemplateId } from './templates';
 import type { Model, StyleLibraryItem, Clip } from '@/lib/supabase/types';
 
@@ -423,8 +424,10 @@ export type TemplateSelection = {
   template_id: TemplateId;
   text_primary: string;
   text_secondary: string | null;
-  palette: string[];       // 4 hex colors, in priority order (primary, secondary, accent, outline)
-  frame_indices: number[]; // which of the scored frames (0,1,2) to use for this variant's subject cutouts
+  palette: string[];
+  frame_indices: number[];
+  background_concept: string;  // Claude's short description of the thematic scene (e.g. 'heavenly clouds with soft sunlight')
+  background_prompt: string;   // the full Flux-ready prompt Claude generated
   reasoning: string;
 };
 
@@ -488,17 +491,126 @@ function enforcePaletteContrast(palette: string[]): string[] {
   return [fill, outline, bgPrimary, bgAccent];
 }
 
-function postProcessSelections(selections: TemplateSelection[]): TemplateSelection[] {
+function postProcessSelections(
+  selections: TemplateSelection[],
+  brandPrimary: string,
+  brandAccent: string,
+): TemplateSelection[] {
   if (selections.length === 0) return selections;
 
   // Enforce same text_primary across all variants (use variant 1's normalized version)
   const canonicalText = normalizeTitle(selections[0].text_primary);
 
+  // GUARANTEE font category variety. We require the 6 variants to include AT LEAST:
+  //   - 1 cursive/script template (Dancing Script, Sacramento, Pinyon Script)
+  //   - 1 glam serif template (Abril Fatface, Yeseva, Playfair Italic)
+  //   - 1 chunky/dom block template (Anton, Bebas Neue, Alfa Slab)
+  // The other 3 are whatever Claude picked.
+  if (selections.length === 6) {
+    const SCRIPT_TEMPLATES: TemplateId[] = ['cursive-elegance', 'romantic-script', 'casual-handwritten-bold', 'neon-script', 'script-overlay', 'handwritten-casual'];
+    const GLAM_TEMPLATES: TemplateId[] = ['glam-serif', 'cute-bubble', 'disco-retro'];
+    const BLOCK_TEMPLATES: TemplateId[] = ['big-block', 'hero-pose', 'slab-menace', 'crossed-layered'];
+
+    const has = (cat: TemplateId[]) => selections.some((s) => cat.includes(s.template_id));
+    const hasScript = has(SCRIPT_TEMPLATES);
+    const hasGlam = has(GLAM_TEMPLATES);
+    const hasBlock = has(BLOCK_TEMPLATES);
+
+    const usedIds = new Set(selections.map((s) => s.template_id));
+
+    // Helper: find first non-mandatory variant that we can overwrite
+    const findSwapCandidate = (preferredCats: TemplateId[][]): number => {
+      for (let i = 0; i < selections.length; i++) {
+        const id = selections[i].template_id;
+        // Don't swap variants whose template is already in a "needed" category
+        const inNeededCat = preferredCats.some((c) => c.includes(id));
+        if (!inNeededCat) return i;
+      }
+      return 0; // Last resort: overwrite first
+    };
+
+    const pickFromCategory = (cat: TemplateId[]): TemplateId | null => {
+      const available = cat.filter((id) => !usedIds.has(id));
+      return available[0] || cat[0] || null;
+    };
+
+    if (!hasScript) {
+      const newId = pickFromCategory(SCRIPT_TEMPLATES);
+      if (newId) {
+        const idx = findSwapCandidate([SCRIPT_TEMPLATES, GLAM_TEMPLATES, BLOCK_TEMPLATES]);
+        console.log(`[postProcess] Forcing SCRIPT category: variant ${idx + 1} ${selections[idx].template_id} -> ${newId}`);
+        usedIds.delete(selections[idx].template_id);
+        selections[idx].template_id = newId;
+        usedIds.add(newId);
+      }
+    }
+
+    if (!hasGlam) {
+      const newId = pickFromCategory(GLAM_TEMPLATES);
+      if (newId) {
+        const idx = findSwapCandidate([SCRIPT_TEMPLATES, GLAM_TEMPLATES, BLOCK_TEMPLATES]);
+        console.log(`[postProcess] Forcing GLAM category: variant ${idx + 1} ${selections[idx].template_id} -> ${newId}`);
+        usedIds.delete(selections[idx].template_id);
+        selections[idx].template_id = newId;
+        usedIds.add(newId);
+      }
+    }
+
+    if (!hasBlock) {
+      const newId = pickFromCategory(BLOCK_TEMPLATES);
+      if (newId) {
+        const idx = findSwapCandidate([SCRIPT_TEMPLATES, GLAM_TEMPLATES, BLOCK_TEMPLATES]);
+        console.log(`[postProcess] Forcing BLOCK category: variant ${idx + 1} ${selections[idx].template_id} -> ${newId}`);
+        usedIds.delete(selections[idx].template_id);
+        selections[idx].template_id = newId;
+        usedIds.add(newId);
+      }
+    }
+  }
+
+  // Enforce 3+3 thematic/simple split for 6-variant batches
+  if (selections.length === 6) {
+    const thematicIndices: number[] = [];
+    const simpleIndices: number[] = [];
+    selections.forEach((s, i) => {
+      const isSimple = !s.background_prompt
+        || s.background_prompt.trim().length === 0
+        || (s.background_concept || '').toLowerCase().includes('simple');
+      if (isSimple) simpleIndices.push(i);
+      else thematicIndices.push(i);
+    });
+
+    // If we have too many thematic, force the LAST ones to be simple
+    while (thematicIndices.length > 3) {
+      const lastThematic = thematicIndices.pop()!;
+      simpleIndices.push(lastThematic);
+      selections[lastThematic].background_concept = 'simple';
+      selections[lastThematic].background_prompt = '';
+    }
+    // If we have too many simple, unfortunately we can't invent thematic prompts — log a warning but accept
+    if (thematicIndices.length < 3) {
+      console.warn(`[postProcess] Only ${thematicIndices.length} thematic variants (expected 3). Accepting as-is.`);
+    }
+  }
+
   return selections.map((s) => ({
     ...s,
     text_primary: canonicalText,
-    text_secondary: null,  // title-only: never render a subtitle
-    palette: enforcePaletteContrast(s.palette),
+    text_secondary: null,
+    // Force brand colors into bg slots — Claude only controls text fill + outline
+    palette: enforcePaletteContrast([
+      s.palette[0] || '#FFFFFF',  // text_fill (Claude's choice)
+      s.palette[1] || '#000000',  // text_outline (Claude's choice)
+      brandPrimary,                // bg_primary FORCED to brand
+      brandAccent,                 // bg_accent FORCED to brand
+    ]),
+    background_concept: s.background_concept || 'simple',
+    // Treat 'simple' concept, empty/null prompt, or prompts containing the word 'simple' as a signal to use algorithmic (pass null through)
+    background_prompt: (
+      !s.background_prompt
+      || s.background_prompt.trim().length === 0
+      || (s.background_concept || '').toLowerCase().includes('simple')
+    ) ? null : s.background_prompt,
   }));
 }
 
@@ -558,7 +670,23 @@ TASK: Select 6 DIFFERENT templates for this clip (one per variant) and define th
 
 RULES:
 
-1. **Three DIFFERENT templates, covering DIFFERENT layout types.**
+1. **Six DIFFERENT templates with FONT + LAYOUT VARIETY.**
+
+   You MUST pick 6 different template_ids covering:
+   - At least 3 distinct layout types (single/mirror/triple-diff/split-diff)
+   - At least 4 distinct primary fonts across the 6 templates (check each template's primary_font field in the list above — make sure you're spanning diverse font choices, not picking 4 templates that all use 'anton')
+
+   **AT LEAST 2 of your 6 picks MUST be from this "glam/script/artistic" set — regardless of clip tone:**
+   - glam-serif (Abril Fatface)
+   - neon-script (Bowlby One + Dancing Script)
+   - script-overlay (Bowlby One + Pinyon Script)
+   - handwritten-casual (Caveat + Sacramento)
+   - disco-retro (Monoton)
+   - cute-bubble (Fredoka One)
+
+   This ensures the user always gets a mix of commanding block-font thumbnails AND softer/glam/script-font options to choose from. Even harsh clips benefit from having a sexier-font option in the batch.
+
+   **Three DIFFERENT templates, covering DIFFERENT layout types.**
    Available layout types: single, mirror, triple-diff, split-diff.
    Your six picks must include AT LEAST 3 distinct layout types. At minimum: 2 single + 1 mirror + 1 triple-diff + 2 any. Six 'single' templates is NOT acceptable.
 
@@ -580,7 +708,43 @@ RULES:
    - bg_primary, bg_accent: brand colors (${primary}, ${accent}) or a specific color pair from the template's default_palette.
    - Rule of thumb: text needs to be legible at 120px wide (YouTube thumbnail size). If the text color is similar to the background color, the thumbnail FAILS.
 
-5. Reasoning: 1 sentence per variant explaining why this template+palette fits.
+5. **Background concept — MIX STYLES ACROSS THE 6 VARIANTS.**
+
+   **CRITICAL MIX RULE (WILL BE VALIDATED):** Across the 6 variants, EXACTLY 3 MUST be "thematic scenes" (AI-generated environments with a real Flux prompt) and EXACTLY 3 MUST be "simple" (flat/gradient/spiral — algorithmic, no AI).
+
+If you return anything other than 3+3, the system will auto-adjust. To comply: mark exactly 3 variants as "simple" (background_concept='simple', background_prompt=null) and exactly 3 as thematic (with real scene prompts). Do this deliberately.
+
+   - For **thematic scene variants**: fill in background_concept (2-5 words) AND background_prompt (1-2 sentences Flux-ready).
+   - For **simple variants**: set background_concept to the literal word 'simple' AND set background_prompt to null or empty string. The template's default algorithmic background will be used.
+
+   This gives the user a mix of polished thematic thumbnails and clean, high-contrast simple ones — different use cases, different vibes.
+
+   **Rules for the thematic variants:**
+   Write a short concept name (background_concept, 2-5 words) AND a full prompt (background_prompt, 1-2 sentences) for the scenic background behind the subject.
+
+   Rules for background_concept:
+   - Match the thematic/emotional vibe of the clip (tags, title, description)
+   - Examples by tag:
+     * hypno/mindfuck/goon → "heavenly cloud dreamscape" / "swirling psychedelic mist" / "deep cosmic void with stars"
+     * chastity/findom/command → "royal throne room velvet" / "dark dungeon with warm torchlight" / "gold-dripping luxury chamber"
+     * tease/sensual/worship → "moonlit silk bedroom" / "champagne bubbles and roses" / "dark boudoir with rose petals"
+     * humiliation/SPH/loser → "neon lit club interior" / "spotlight stage empty" / "bright pink pop-art backdrop"
+     * foot/ass/breast worship → "silk draped luxury close-up" / "velvet cushioned decor" / "marble columns and silk"
+     * intimate/soft/GFE → "candlelit bedroom with rose petals" / "warm sunset through curtains" / "soft pink satin sheets"
+     * bratty/playful → "bubblegum confetti explosion" / "pink cloud candy sky" / "neon pink studio backdrop"
+     * angel/princess/goddess → "heavenly clouds golden sunlight" / "marble temple with gold accents" / "ethereal sky with light rays"
+     * devil/demon → "smoky red hellscape" / "dark throne with red velvet" / "moody dark chamber with red candles"
+
+   Rules for background_prompt (Flux-ready):
+   - DESCRIBE THE SCENE ONLY. No people. No kink objects. No text. No watermarks.
+   - Include mood lighting, atmosphere, color palette.
+   - Keep it PG-13 — the scene itself must pass a content safety filter.
+   - Examples:
+     * "Soft fluffy white clouds in a bright blue sky, warm golden sunlight streaming through, dreamy ethereal atmosphere, high-end photography"
+     * "Dark elegant throne room with deep purple velvet drapes, warm amber candlelight, luxurious atmosphere, cinematic lighting"
+     * "Gold confetti and dollar bills falling through the air against a black background, dramatic studio lighting, opulent luxury"
+
+6. Reasoning: 1 sentence per variant explaining why this template+palette+background fits.
 
 Return ONLY valid JSON. Start with { and end with }. No prose, no explanation, no markdown code fences, no additional text before or after:
 
@@ -593,6 +757,8 @@ Return ONLY valid JSON. Start with { and end with }. No prose, no explanation, n
       "text_secondary": "<optional, or null>",
       "palette": ["#text_fill", "#text_outline", "#bg_primary", "#bg_accent"],
       "frame_indices": [<0|1|2>, ...],
+      "background_concept": "<2-5 words naming the scene>",
+      "background_prompt": "<1-2 sentences Flux prompt for thematic variants, OR null for simple variants>",
       "reasoning": "<1 sentence why this template + copy fits this clip>"
     }
   ]
@@ -617,6 +783,9 @@ Return ONLY valid JSON. Start with { and end with }. No prose, no explanation, n
   }
   // @ts-ignore - runtime safety check
   parsed = parsed as { selections: TemplateSelection[] };
-  return postProcessSelections(parsed.selections);
+  console.log('[selectTemplatesForClip] Claude picked these template_ids:', parsed.selections.map((s: any) => s.template_id));
+  const processed = postProcessSelections(parsed.selections, primary, accent);
+  console.log('[selectTemplatesForClip] After postProcess:', processed.map((s) => s.template_id));
+  return processed;
 }
 

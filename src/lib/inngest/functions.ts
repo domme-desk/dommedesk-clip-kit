@@ -291,6 +291,7 @@ export const processClip = inngest.createFunction(
           text_primary: sel.text_primary,
           text_secondary: sel.text_secondary,
           palette: sel.palette,
+          background_prompt: sel.background_prompt,
           watermark_url: ctx.model.watermark_url,
           watermark_position: (ctx.model.watermark_position as 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center' | undefined) || 'bottom-right',
         });
