@@ -466,29 +466,58 @@ function contrastRatio(hex1: string, hex2: string): number {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-function enforcePaletteContrast(palette: string[]): string[] {
+// Templates that use thin/cursive script fonts as primary — need higher contrast
+const SCRIPT_PRIMARY_TEMPLATES = new Set<string>([
+  'cursive-elegance',     // Pinyon Script
+  'romantic-script',       // Sacramento
+  'casual-handwritten-bold', // Caveat
+  'pair-pose-script',      // Pinyon Script
+  'neon-script',           // has script secondary but primary is bowlby
+  'script-overlay',        // mix
+]);
+
+function enforcePaletteContrast(palette: string[], templateId?: string): string[] {
   // Palette order: [text_fill, text_outline, bg_primary, bg_accent]
-  const [textFill, textOutline, bgPrimary, bgAccent] = palette;
+  const [textFill, , bgPrimary, bgAccent] = palette;
 
-  // Rule 1: text_outline should always be black (or very dark) — override if it's not
-  let outline = textOutline;
-  if (hexLuminance(textOutline) > 0.3) {
-    outline = '#000000';
-  }
+  // STRICT RULE: text_fill must be from the "punchy" allowlist.
+  // No muted/dark shades, no background-matched colors. Always something that screams.
+  const PUNCHY_FILLS: Record<string, string> = {
+    white: '#FFFFFF',
+    yellow: '#FFEB3B',
+    'hot-pink': '#FF1493',
+    cyan: '#00F5FF',
+    'lime-green': '#39FF14',
+  };
 
-  // Rule 2: text_fill must have contrast > 3.0 against bg_primary. If not, force white.
-  let fill = textFill;
-  if (contrastRatio(textFill, bgPrimary) < 3.0) {
-    // Try white first
-    if (contrastRatio('#FFFFFF', bgPrimary) >= 3.0) {
-      fill = '#FFFFFF';
-    } else {
-      // Fallback to yellow
-      fill = '#FFEB3B';
+  const isScriptTemplate = templateId && SCRIPT_PRIMARY_TEMPLATES.has(templateId);
+  const minContrast = isScriptTemplate ? 5.0 : 3.5;
+
+  // Score every punchy color against the background and pick the best one
+  // that's at or above the minimum contrast threshold
+  let bestFill = '#FFFFFF';
+  let bestContrast = 0;
+  for (const candidate of Object.values(PUNCHY_FILLS)) {
+    const c = contrastRatio(candidate, bgPrimary);
+    if (c >= minContrast && c > bestContrast) {
+      bestFill = candidate;
+      bestContrast = c;
     }
   }
 
-  return [fill, outline, bgPrimary, bgAccent];
+  // If Claude's original choice IS in the allowlist AND has good contrast, prefer it
+  // (preserves Claude's creative intent when it's already a good color)
+  const claudeFillUpper = (textFill || '').toUpperCase();
+  const allowed = Object.values(PUNCHY_FILLS).map(c => c.toUpperCase());
+  if (allowed.includes(claudeFillUpper) && contrastRatio(textFill, bgPrimary) >= minContrast) {
+    bestFill = textFill;
+  }
+
+  // Outline: ALWAYS BLACK. Period. No exceptions.
+  // This is the non-negotiable rule from your reference thumbnails.
+  const outline = '#000000';
+
+  return [bestFill, outline, bgPrimary, bgAccent];
 }
 
 function postProcessSelections(
@@ -501,11 +530,9 @@ function postProcessSelections(
   // Enforce same text_primary across all variants (use variant 1's normalized version)
   const canonicalText = normalizeTitle(selections[0].text_primary);
 
-  // GUARANTEE font category variety. We require the 6 variants to include AT LEAST:
-  //   - 1 cursive/script template (Dancing Script, Sacramento, Pinyon Script)
-  //   - 1 glam serif template (Abril Fatface, Yeseva, Playfair Italic)
-  //   - 1 chunky/dom block template (Anton, Bebas Neue, Alfa Slab)
-  // The other 3 are whatever Claude picked.
+  // Soft variety check: if references suggest the user wants a wider mix,
+  // we still nudge toward 1 from each category, but only if Claude picked
+  // 4+ from the same category (a "monoculture" pick).
   if (selections.length === 6) {
     const SCRIPT_TEMPLATES: TemplateId[] = ['cursive-elegance', 'romantic-script', 'casual-handwritten-bold', 'neon-script', 'script-overlay', 'handwritten-casual', 'pair-pose-script'];
     const GLAM_TEMPLATES: TemplateId[] = ['glam-serif', 'cute-bubble', 'disco-retro', 'pair-pose-bold'];
@@ -603,7 +630,7 @@ function postProcessSelections(
       s.palette[1] || '#000000',  // text_outline (Claude's choice)
       brandPrimary,                // bg_primary FORCED to brand
       brandAccent,                 // bg_accent FORCED to brand
-    ]),
+    ], s.template_id),
     background_concept: s.background_concept || 'simple',
     // Treat 'simple' concept, empty/null prompt, or prompts containing the word 'simple' as a signal to use algorithmic (pass null through)
     background_prompt: (
@@ -629,7 +656,20 @@ export async function selectTemplatesForClip(
 
   console.log(`[selectTemplatesForClip] Loaded ${styleExamples.length} thumbnail style examples and ${descriptionExamples.length} description examples`);
   if (styleExamples.length > 0) {
-    content.push({ type: 'text', text: 'Prior thumbnail examples for this creator (visual grammar reference):' });
+    content.push({
+      type: 'text',
+      text: `THIS CREATOR'S BRAND VOICE — STUDY THESE THUMBNAILS CAREFULLY.
+
+The following ${styleExamples.length} thumbnails define this creator's signature visual language. Your goal is to capture the SAME aesthetic energy, color palettes, and typographic choices when picking templates and writing palettes for the new clip.
+
+Pay close attention to:
+- **Typography style**: Are most titles in chunky sans, elegant serifs, flowing scripts, or playful bubble fonts? Match that energy.
+- **Color palette**: What 2-3 colors dominate? Use them as your bg_primary/bg_accent in most variants.
+- **Mood**: Glamorous? Aggressive? Playful? Angelic? Mocking? Capture this in your background concepts.
+- **Composition style**: Single-figure dominant? Pair/multi-figure? Layered? Use this as your layout signal.
+
+Your 6 variants for the new clip should feel like NEW additions to this same brand library. Not generic templates — pieces that belong with these.`,
+    });
     for (const ex of styleExamples.slice(0, 8)) {
       content.push(await urlToImageBlock(ex.asset_url));
     }
@@ -671,25 +711,20 @@ TASK: Select 6 DIFFERENT templates for this clip (one per variant) and define th
 
 RULES:
 
-1. **Six DIFFERENT templates with FONT + LAYOUT VARIETY.**
+1. **Six DIFFERENT templates that CAPTURE THE BRAND'S VISUAL LANGUAGE (priority #1).**
 
-   You MUST pick 6 different template_ids covering:
-   - At least 3 distinct layout types (single/mirror/triple-diff/split-diff)
-   - At least 4 distinct primary fonts across the 6 templates (check each template's primary_font field in the list above — make sure you're spanning diverse font choices, not picking 4 templates that all use 'anton')
+   First and foremost: study the reference thumbnails above. Pick 6 different template_ids whose font/layout/style choices best match the brand's established visual signature.
 
-   **AT LEAST 2 of your 6 picks MUST be from this "glam/script/artistic" set — regardless of clip tone:**
-   - glam-serif (Abril Fatface)
-   - neon-script (Bowlby One + Dancing Script)
-   - script-overlay (Bowlby One + Pinyon Script)
-   - handwritten-casual (Caveat + Sacramento)
-   - disco-retro (Monoton)
-   - cute-bubble (Fredoka One)
+   Soft variety guidelines (apply ONLY where they don't fight the brand reference):
+   - Aim for 2-4 distinct primary fonts across the 6 templates
+   - Aim for 2-3 distinct layout types
+   - If the brand uses a lot of cursive scripts, lean into the script set (cursive-elegance, romantic-script, neon-script, script-overlay, casual-handwritten-bold)
+   - If the brand uses chunky bubble fonts, lean into bubble templates (cute-bubble, pair-pose-bold)
+   - If the brand uses glam serifs, lean into glam-serif and similar
 
-   This ensures the user always gets a mix of commanding block-font thumbnails AND softer/glam/script-font options to choose from. Even harsh clips benefit from having a sexier-font option in the batch.
+   The references override generic variety rules. If references show 5 cursive thumbnails, don't force a chunky sans into the batch just for "variety" — capture what the brand actually looks like.
 
-   **Three DIFFERENT templates, covering DIFFERENT layout types.**
-   Available layout types: single, mirror, triple-diff, split-diff, pair-close (two different poses, side by side with slight overlap).
-   Your six picks must include AT LEAST 3 distinct layout types. At minimum: 2 single + 1 mirror + 1 triple-diff + 2 any. Six 'single' templates is NOT acceptable.
+   Available layout types: single, mirror, triple-diff, split-diff, pair-close. Pick layouts that match what the references show — if they're mostly pair-close (two figures), use that more; if they're mostly single, use single. Don't force layout variety against brand voice.
 
 2. **Text is the clip TITLE, styled per template.**
    - Primary text (text_primary) = the clip's title, normalized:

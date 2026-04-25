@@ -129,7 +129,11 @@ function renderTextWithCanvas(opts: {
     fontSize -= 2;
   }
 
-  const stroke = Math.max(6, Math.round(fontSize * 0.11));
+  // Script fonts have thin natural strokes — make outline thicker for legibility
+  const SCRIPT_FONTS: FontKey[] = ['pinyon-script', 'sacramento', 'dancing-script', 'pacifico', 'caveat'];
+  const isScript = SCRIPT_FONTS.includes(primaryFont);
+  const strokeMultiplier = isScript ? 0.16 : 0.11;
+  const stroke = Math.max(isScript ? 10 : 6, Math.round(fontSize * strokeMultiplier));
 
   const canvas = createCanvas(canvasW, canvasH);
   const ctx = canvas.getContext('2d');
