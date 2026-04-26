@@ -198,6 +198,24 @@ export async function composeVariantsForClip(
       '4. Lockup typography should vary across variants. Do not use the same font on every variant.',
       '5. `themed-image` mode is the most expensive both in cost and visual risk. Use at most 1-2 variants out of 6 with themed-image.',
       '6. `frame-saturated` is great for clips where the figure\'s environment in the source frame is itself part of the appeal.',
+      '7. **TEXT MUST NOT OVERLAP FIGURES — DO THE MATH.** Before you write text_placement, compute each figure\'s rectangular bbox in canvas pct, then place the lockup in a region that does NOT intersect any figure bbox. The bbox math:',
+      '   - Each figure has scale_pct (height as fraction of canvas). Width is roughly scale_pct * 0.55 (figures are taller than wide). For example, scale_pct: 0.85 -> bbox height: 0.85, bbox width: ~0.47.',
+      '   - Figure bbox in canvas pct: left = position.x_pct - (width/2), right = position.x_pct + (width/2), top = position.y_pct - (height/2), bottom = position.y_pct + (height/2).',
+      '   - The lockup bbox is also rectangular: width = max_width_pct, height ~= 0.30 (most lockups are 2-3 lines tall).',
+      '   - The lockup bbox must NOT intersect any figure bbox. If your math says they would overlap, REPOSITION the lockup until they do not.',
+      '',
+      '   CONCRETE PATTERNS BY LAYOUT:',
+      '   - Hero with figure on right (x_pct: 0.55-0.70, scale 0.85): figure occupies roughly x: 0.32-0.93. Place lockup in x: 0.04-0.32, anchor:start, max_width: 0.30. y_pct: 0.20-0.50.',
+      '   - Hero with figure on left (x_pct: 0.30-0.45, scale 0.85): figure occupies roughly x: 0.07-0.68. Place lockup in x: 0.68-0.96, anchor:end, max_width: 0.30. y_pct: 0.20-0.50.',
+      '   - Mirrored (figures at x: 0.18 and 0.82, scale 0.72): figures occupy outer thirds. Lockup goes in the TOP BAND (y_pct: 0.12, anchor:middle, max_width: 0.65) — there is clear space above their heads if scale_pct is <= 0.72. NOT between them, NOT bottom band.',
+      '   - Background-frame + overlay: bg-frame fills canvas. Overlay figure is small + off-center. Place lockup in the corner OPPOSITE the overlay. Overlay top-right -> lockup bottom-left. Overlay bottom-right -> lockup top-left.',
+      '',
+      '   GUARDRAILS:',
+      '   - The lockup center y_pct must be between 0.18 and 0.82 (otherwise it clips off canvas).',
+      '   - For anchor:start, x_pct must be <= 0.95 - max_width_pct.',
+      '   - For anchor:end, x_pct must be >= max_width_pct + 0.04.',
+      '   - For anchor:middle, x_pct must be between max_width_pct/2 and 1 - max_width_pct/2.',
+      '   - If you cannot find a non-overlapping zone with reasonable max_width_pct, REDUCE max_width_pct (smaller text) or REDUCE scale_pct (smaller figure) until it fits. The composition must work.',
       '',
       '## Spec format',
       '',
@@ -311,11 +329,61 @@ export async function composeVariantsForClip(
 
   // Clamp algorithmic opacity to 0.4 as a safety net.
   for (const spec of parsed.compositions) {
-    if (spec.background?.algorithmic?.opacity !== undefined) {
+    if (spec?.background?.algorithmic?.opacity !== undefined) {
       spec.background.algorithmic.opacity = Math.min(0.4, spec.background.algorithmic.opacity);
     }
   }
 
-  console.log('[composeVariantsForClip] Generated ' + parsed.compositions.length + ' compositions');
-  return parsed.compositions;
+  // Validate each spec has the required structure. Replace any null/malformed
+  // spec with a minimal fallback so the renderer never gets undefined input.
+  const validated: CompositionSpec[] = parsed.compositions.map((spec, idx) => {
+    const isValid = spec
+      && Array.isArray(spec.figures)
+      && spec.figures.length > 0
+      && Array.isArray(spec.lockup)
+      && spec.lockup.length > 0
+      && spec.background?.mode
+      && spec.text_placement;
+    if (isValid) return spec;
+    console.warn('[composeVariantsForClip] Spec ' + idx + ' is invalid, using fallback. Got:', JSON.stringify(spec)?.slice(0, 200));
+    return {
+      reasoning: 'Fallback: original Composer spec was invalid.',
+      figures: [
+        {
+          role: 'hero',
+          crop: 'medium',
+          position: { x_pct: 0.55, y_pct: 0.55 },
+          scale_pct: 0.85,
+          mirrored: false,
+          frame_index: 0,
+          treatment: { saturation: 1.0, brightness: 1.0, rim_light: '#FF1493', glow: null },
+        },
+      ],
+      background: {
+        mode: 'monochrome-saturated',
+        colors: ['#FF1493', '#9D4EDD'],
+      },
+      lockup: [
+        { text: (clip.title || 'UNTITLED').toUpperCase().slice(0, 30), font: 'anton', size_pct: 0.20, fill: '#FFFFFF', outline_color: '#000000' },
+      ],
+      text_placement: { x_pct: 0.5, y_pct: 0.18, anchor: 'middle', max_width_pct: 0.85 },
+    };
+  });
+
+  // Two-moment auto-correction: if a spec has both background-frame and overlay
+  // figures with the same frame_index, bump the overlay's frame_index by 1 so
+  // they show different moments. Composer doesn't reliably follow this rule
+  // even when the prompt requires it.
+  for (const spec of validated) {
+    const bgFrame = spec.figures.find((f) => f.role === 'background-frame');
+    const overlay = spec.figures.find((f) => f.role === 'overlay');
+    if (bgFrame && overlay && (bgFrame.frame_index ?? 0) === (overlay.frame_index ?? 0)) {
+      const newIdx = ((bgFrame.frame_index ?? 0) + 1) % 3;
+      overlay.frame_index = newIdx;
+      console.log('[composeVariantsForClip] Auto-corrected overlay frame_index to ' + newIdx + ' (was duplicate of background-frame)');
+    }
+  }
+
+  console.log('[composeVariantsForClip] Generated ' + validated.length + ' compositions (' + (validated.length - parsed.compositions.filter((s: unknown) => s && (s as { figures?: unknown }).figures).length) + ' fallbacks)');
+  return validated;
 }

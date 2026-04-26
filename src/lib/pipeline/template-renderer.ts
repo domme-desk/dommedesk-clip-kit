@@ -914,13 +914,25 @@ function wmOffset(pos: string | undefined, wmW: number, wmH: number) {
  * (existing renderLockupWithCanvas input).
  */
 function textPlacementFromPct(p: TextPlacementPct): TextPlacement {
-  // Treat y_pct as the CENTER of the lockup vertically, with safety margins so
-  // the lockup never extends off-canvas. We assume a typical lockup occupies
-  // roughly 30% of canvas height; keep the center between 18% and 82% so it
-  // always fits even if the Composer outputs an extreme y value.
+  // Clamp y to keep lockup on canvas vertically.
   const safeY = Math.max(0.18, Math.min(0.82, p.y_pct));
+
+  // Clamp x based on anchor + max_width so the lockup never extends off canvas.
+  // - 'middle' anchor needs x at least max_width/2 from each edge
+  // - 'start' anchor needs x at most (1 - max_width) from the left
+  // - 'end' anchor needs x at least max_width from the left
+  const halfW = p.max_width_pct / 2;
+  let safeX: number;
+  if (p.anchor === 'middle') {
+    safeX = Math.max(halfW, Math.min(1 - halfW, p.x_pct));
+  } else if (p.anchor === 'start') {
+    safeX = Math.max(0.04, Math.min(1 - p.max_width_pct - 0.04, p.x_pct));
+  } else { // 'end'
+    safeX = Math.max(p.max_width_pct + 0.04, Math.min(0.96, p.x_pct));
+  }
+
   return {
-    x: Math.round(p.x_pct * CANVAS_W),
+    x: Math.round(safeX * CANVAS_W),
     y: Math.round(safeY * CANVAS_H),
     maxWidth: Math.round(p.max_width_pct * CANVAS_W),
     anchor: p.anchor,
@@ -1097,8 +1109,23 @@ async function placeComposerFigure(
   // position is figure CENTER, in canvas pct
   const centerX = Math.round(spec.position.x_pct * CANVAS_W);
   const centerY = Math.round(spec.position.y_pct * CANVAS_H);
-  const left = Math.max(0, Math.min(centerX - Math.round(w / 2), CANVAS_W - w));
-  const top = Math.max(0, Math.min(centerY - Math.round(h / 2), CANVAS_H - h));
+  const naiveLeft = centerX - Math.round(w / 2);
+  const naiveTop = centerY - Math.round(h / 2);
+
+  // Figure-bottom clamp: if the figure would extend below canvas, anchor its
+  // BOTTOM to canvas bottom instead of trying to honor the center exactly.
+  // This is what the user means by "show the full model or cut off at the
+  // thumbnail bottom" — never have a flat horizontal line through the torso.
+  const naiveBottom = naiveTop + h;
+  let top: number;
+  if (naiveBottom > CANVAS_H) {
+    // Anchor figure bottom to canvas bottom
+    top = CANVAS_H - h;
+  } else {
+    // Normal center-based positioning, clamped to canvas
+    top = Math.max(0, Math.min(naiveTop, CANVAS_H - h));
+  }
+  const left = Math.max(0, Math.min(naiveLeft, CANVAS_W - w));
 
   // Apply treatment (saturation/brightness) if present
   if (spec.treatment?.saturation || spec.treatment?.brightness) {
@@ -1122,9 +1149,22 @@ export async function renderComposition(input: CompositionRenderInput): Promise<
 
   const { spec, source_frame_urls, subject_urls, watermark_url, watermark_position } = input;
 
+  // ---- 0. Defensive guards on the spec ----
+  if (!spec) throw new Error('renderComposition: spec is null/undefined');
+  if (!spec.figures || spec.figures.length === 0) {
+    throw new Error('renderComposition: spec has no figures (Composer produced an empty composition)');
+  }
+  if (!spec.lockup || spec.lockup.length === 0) {
+    throw new Error('renderComposition: spec has no lockup lines');
+  }
+  if (!spec.background?.mode) {
+    throw new Error('renderComposition: spec has no background mode');
+  }
+  if (!spec.text_placement) {
+    throw new Error('renderComposition: spec has no text_placement');
+  }
+
   // ---- 1. Fetch all source assets ----
-  // Source frames (one per index referenced by figures, but we'll just fetch all and pick by index).
-  // Subject cutouts (bg-removed) — same pattern.
   if (source_frame_urls.length === 0) throw new Error('renderComposition: no source_frame_urls provided');
   if (subject_urls.length === 0) throw new Error('renderComposition: no subject_urls provided');
 
