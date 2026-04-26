@@ -23,6 +23,85 @@ export type TextPlacement = {
 };
 
 // ---------------------------------------------------------------------------
+// Composer spec types — Claude outputs one of these per variant.
+// The renderer (renderComposition) consumes them deterministically.
+// ---------------------------------------------------------------------------
+
+export type FigureRole = 'hero' | 'flank-left' | 'flank-right' | 'overlay' | 'background-frame';
+export type FigureCrop = 'frame' | 'wide' | 'medium' | 'tight' | 'face';
+
+export type FigureTreatment = {
+  saturation?: number;     // 1.0 = neutral
+  brightness?: number;     // 1.0 = neutral
+  rim_light?: string | null;  // hex color or null
+  glow?: string | null;       // hex color or null
+};
+
+export type FigureSpec = {
+  role: FigureRole;
+  crop: FigureCrop;
+  position: { x_pct: number; y_pct: number };  // figure center, 0.0-1.0
+  scale_pct: number;                             // figure height as fraction of canvas, 0.3-1.0
+  mirrored?: boolean;
+  treatment?: FigureTreatment;
+  // Which source frame this figure uses (0/1/2). Defaults to 0 if omitted.
+  // Used by the renderer to pull from the right bg-removed cutout AND, for crop:'frame'
+  // or background-frame role, the right original frame.
+  frame_index?: number;
+};
+
+export type BackgroundMode =
+  | 'solid'
+  | 'gradient'
+  | 'monochrome-saturated'
+  | 'frame-saturated'
+  | 'algorithmic-spiral'
+  | 'algorithmic-halo'
+  | 'themed-image';
+
+export type BackgroundSpec = {
+  mode: BackgroundMode;
+  colors?: string[];                    // for solid/gradient/monochrome-saturated
+  gradient_angle_deg?: number;          // for gradient
+  frame_shift?: { hue_deg: number; saturation: number };  // for frame-saturated
+  algorithmic?: {
+    color: string;
+    opacity: number;       // HARD CAP at 0.4 (renderer will clamp)
+    scale: number;
+  };
+  themed_prompt?: string;               // for themed-image (Flux prompt)
+};
+
+export type TextPlacementPct = {
+  x_pct: number;
+  y_pct: number;
+  anchor: 'start' | 'middle' | 'end';
+  max_width_pct: number;
+};
+
+export type CompositionSpec = {
+  reasoning: string;
+  figures: FigureSpec[];
+  background: BackgroundSpec;
+  lockup: LockupLineRender[];           // existing type, no changes
+  text_placement: TextPlacementPct;
+};
+
+// Composition input for the renderer (vs the Composer's output spec).
+// Adds the fields the renderer needs that aren't part of the spec itself.
+export type CompositionRenderInput = {
+  spec: CompositionSpec;
+  // Original frames (one per figure that needs frame-source content, or one shared).
+  // Used for: frame-saturated bg mode, figure crops with crop: 'frame'.
+  source_frame_urls: string[];
+  // Background-removed subject cutouts. Used for face/tight/medium/wide crops.
+  subject_urls: string[];
+  watermark_url?: string | null;
+  watermark_position?: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center';
+};
+
+
+// ---------------------------------------------------------------------------
 // Register fonts globally with @napi-rs/canvas (once, on module load)
 // Resvg-js does not properly render TTF font variations; canvas does.
 // ---------------------------------------------------------------------------
@@ -543,8 +622,10 @@ async function layoutMirror(subject: Buffer, rimColor: string): Promise<Position
   const leftCopy = target;
   const rightCopy = await sharp(target).flop().toBuffer();
   const topY = CANVAS_H - h;
-  const leftX = Math.round(CANVAS_W * 0.22 - w / 2);
-  const rightX = Math.round(CANVAS_W * 0.78 - w / 2);
+  // Spread figures wider to give the text candidate (mirror-center, maxWidth 0.38) clean room.
+  // Previous 0.22 / 0.78 left only ~0.32 clear channel — text bled into figures.
+  const leftX = Math.round(CANVAS_W * 0.18 - w / 2);
+  const rightX = Math.round(CANVAS_W * 0.82 - w / 2);
   return [
     await positionedFrom(leftCopy, leftX, topY, rimColor, 0.5),
     await positionedFrom(rightCopy, rightX, topY, rimColor, 0.5),
@@ -705,11 +786,13 @@ function pickTextPlacement(template: TemplateSpec, subjectBoxes: { left: number;
 
     case 'mirror':
       candidates = [
-        // Between the two subjects — check center channel is clear
-        { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.5), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.38), label: 'mirror-center' },
-        // Top band — above both subjects' heads
+        // Top band — above both subjects' heads.
+        // We deliberately omit a center-channel candidate: Claude's size_pct doesn't know the
+        // figures' rendered widths, so text-between-figures consistently overflows into the
+        // figures. If text-between-figures returns, it should be a new layout (e.g. 'mirror-wide')
+        // with figures at 0.12/0.88 and a wide-enough gap that overflow is structurally impossible.
         { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.14), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.88), label: 'mirror-top' },
-        // Bottom band — below the subjects (if they don't fill full height)
+        // Bottom band — below the subjects (if they don't fill full height).
         { x: CANVAS_W / 2, y: Math.round(CANVAS_H * 0.92), anchor: 'middle', maxWidth: Math.round(CANVAS_W * 0.88), label: 'mirror-bottom' },
       ];
       break;
@@ -821,6 +904,340 @@ function wmOffset(pos: string | undefined, wmW: number, wmH: number) {
 // ---------------------------------------------------------------------------
 // Main render function
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Composer helpers — used by renderComposition (the new AI-driven pipeline)
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert pct-based text placement (Composer output) to px-based TextPlacement
+ * (existing renderLockupWithCanvas input).
+ */
+function textPlacementFromPct(p: TextPlacementPct): TextPlacement {
+  // Treat y_pct as the CENTER of the lockup vertically, with safety margins so
+  // the lockup never extends off-canvas. We assume a typical lockup occupies
+  // roughly 30% of canvas height; keep the center between 18% and 82% so it
+  // always fits even if the Composer outputs an extreme y value.
+  const safeY = Math.max(0.18, Math.min(0.82, p.y_pct));
+  return {
+    x: Math.round(p.x_pct * CANVAS_W),
+    y: Math.round(safeY * CANVAS_H),
+    maxWidth: Math.round(p.max_width_pct * CANVAS_W),
+    anchor: p.anchor,
+    verticalAlign: 'center',
+  };
+}
+
+/**
+ * Crop a figure asset per the Composer's crop level.
+ * - 'frame' uses the original frame (no bg removal)
+ * - 'wide' uses the bg-removed subject as-is
+ * - 'medium' / 'tight' / 'face' progressively crop tighter from the top of the bg-removed subject
+ */
+async function cropFigure(
+  bgRemovedSubject: Buffer,
+  sourceFrame: Buffer,
+  crop: FigureCrop
+): Promise<Buffer> {
+  // Source frames are JPEGs (no alpha channel); ensure RGBA before downstream
+  // operations like subjectShadow that call extractChannel('alpha').
+  if (crop === 'frame') {
+    return sharp(sourceFrame).ensureAlpha().png().toBuffer();
+  }
+  if (crop === 'wide') return bgRemovedSubject;
+
+  // For tighter crops, crop the bg-removed subject from the top.
+  // medium = top 75% (waist-up), tight = top 45% (head+shoulders), face = top 28% (face only)
+  const meta = await sharp(bgRemovedSubject).metadata();
+  const w = meta.width || 0;
+  const h = meta.height || 0;
+  if (w === 0 || h === 0) return bgRemovedSubject;
+
+  const cropPct = crop === 'medium' ? 0.75 : crop === 'tight' ? 0.45 : 0.28;
+  const cropH = Math.max(1, Math.round(h * cropPct));
+  return sharp(bgRemovedSubject).extract({ left: 0, top: 0, width: w, height: cropH }).toBuffer();
+}
+
+/**
+ * Render a background per the Composer's BackgroundSpec.mode.
+ * Falls back to monochrome-saturated for unimplemented modes (algorithmic-spiral, algorithmic-halo).
+ */
+async function renderComposerBackground(
+  bg: BackgroundSpec,
+  sourceFrame: Buffer,
+  brandColors: { primary: string; accent: string }
+): Promise<Buffer> {
+  const W = CANVAS_W;
+  const H = CANVAS_H;
+
+  switch (bg.mode) {
+    case 'solid': {
+      const color = bg.colors?.[0] || brandColors.primary;
+      const { r, g, b } = hexToRgb(color);
+      return sharp({ create: { width: W, height: H, channels: 3, background: { r, g, b } } }).png().toBuffer();
+    }
+
+    case 'gradient': {
+      const c1 = bg.colors?.[0] || brandColors.primary;
+      const c2 = bg.colors?.[1] || brandColors.accent;
+      const angle = bg.gradient_angle_deg ?? 135;
+      // Convert angle to SVG linear gradient endpoints
+      const rad = (angle * Math.PI) / 180;
+      const x1 = 50 - Math.cos(rad) * 50;
+      const y1 = 50 - Math.sin(rad) * 50;
+      const x2 = 50 + Math.cos(rad) * 50;
+      const y2 = 50 + Math.sin(rad) * 50;
+      const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="g" x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%">
+            <stop offset="0%" stop-color="${c1}"/>
+            <stop offset="100%" stop-color="${c2}"/>
+          </linearGradient>
+        </defs>
+        <rect width="100%" height="100%" fill="url(#g)"/>
+      </svg>`;
+      return sharp(Buffer.from(svg)).png().toBuffer();
+    }
+
+    case 'monochrome-saturated': {
+      // Single dominant color + radial light center + subtle bokeh circles + edge vignette.
+      // Looks like the aspirational set's soft purple/pink backgrounds with depth and atmosphere.
+      const color = bg.colors?.[0] || brandColors.primary;
+      const accent = bg.colors?.[1] || brandColors.accent;
+      // Pseudo-random bokeh placement based on color hash for stability across renders
+      const seed = (color.charCodeAt(1) + color.charCodeAt(2)) % 7;
+      const bokehCircles = [
+        { cx: 15 + seed * 2, cy: 80, r: 8 },
+        { cx: 88, cy: 25 + seed, r: 6 },
+        { cx: 75, cy: 70, r: 10 },
+        { cx: 25, cy: 30, r: 5 },
+        { cx: 60, cy: 90, r: 7 },
+      ].map((c) => `<circle cx="${c.cx}%" cy="${c.cy}%" r="${c.r}%" fill="${accent}" opacity="0.18"/>`).join('');
+      const svg = `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="lite" cx="50%" cy="45%" r="60%">
+            <stop offset="0%" stop-color="${color}" stop-opacity="1.0"/>
+            <stop offset="70%" stop-color="${color}" stop-opacity="0.85"/>
+            <stop offset="100%" stop-color="${color}" stop-opacity="0.55"/>
+          </radialGradient>
+          <radialGradient id="vig" cx="50%" cy="50%" r="75%">
+            <stop offset="60%" stop-color="#000" stop-opacity="0"/>
+            <stop offset="100%" stop-color="#000" stop-opacity="0.25"/>
+          </radialGradient>
+          <filter id="blur"><feGaussianBlur stdDeviation="40"/></filter>
+        </defs>
+        <rect width="100%" height="100%" fill="${color}"/>
+        <rect width="100%" height="100%" fill="url(#lite)"/>
+        <g filter="url(#blur)">${bokehCircles}</g>
+        <rect width="100%" height="100%" fill="url(#vig)"/>
+      </svg>`;
+      return sharp(Buffer.from(svg)).png().toBuffer();
+    }
+
+    case 'frame-saturated': {
+      // Take the source frame, color-shift, blur slightly so the subject overlaid on top pops.
+      // This is the *Too Pathetic to Perform* style.
+      const shift = bg.frame_shift || { hue_deg: 0, saturation: 1.4 };
+      return sharp(sourceFrame)
+        .resize(W, H, { fit: 'cover' })
+        .modulate({ saturation: shift.saturation, hue: shift.hue_deg })
+        .blur(8)
+        .toBuffer();
+    }
+
+    case 'themed-image': {
+      // Reuse existing Flux pipeline. style/palette args satisfy the function signature.
+      const prompt = bg.themed_prompt || 'soft pink and purple atmospheric';
+      const palette = [bg.colors?.[0] || brandColors.primary, bg.colors?.[1] || brandColors.accent, brandColors.primary, brandColors.accent];
+      return generateBackgroundThematic(prompt, 'gradient', palette);
+    }
+
+    case 'algorithmic-spiral':
+    case 'algorithmic-halo': {
+      // Not yet implemented — fall back to monochrome-saturated using the algorithmic.color hint if present.
+      console.warn(`[renderComposerBackground] mode '${bg.mode}' not yet implemented, falling back to monochrome-saturated`);
+      const fallbackColor = bg.algorithmic?.color || bg.colors?.[0] || brandColors.primary;
+      return renderComposerBackground(
+        { mode: 'monochrome-saturated', colors: [fallbackColor] },
+        sourceFrame,
+        brandColors
+      );
+    }
+
+    default: {
+      console.warn(`[renderComposerBackground] unknown mode, falling back to monochrome-saturated`);
+      return renderComposerBackground(
+        { mode: 'monochrome-saturated', colors: [brandColors.primary] },
+        sourceFrame,
+        brandColors
+      );
+    }
+  }
+}
+
+/**
+ * Place a figure on canvas per its FigureSpec.
+ * Returns the buffer, position (left/top), and bounding box for downstream layering.
+ */
+async function placeComposerFigure(
+  figureBuf: Buffer,
+  spec: FigureSpec
+): Promise<{ buffer: Buffer; left: number; top: number; w: number; h: number }> {
+  // Apply mirroring first (cheap)
+  let working = spec.mirrored ? await sharp(figureBuf).flop().toBuffer() : figureBuf;
+
+  // Resize to scale_pct of canvas height
+  const targetH = Math.round(CANVAS_H * Math.max(0.1, Math.min(1.0, spec.scale_pct)));
+  working = await sharp(working).resize({ height: targetH, fit: 'inside' }).toBuffer();
+
+  const meta = await sharp(working).metadata();
+  const w = meta.width || 0;
+  const h = meta.height || 0;
+
+  // position is figure CENTER, in canvas pct
+  const centerX = Math.round(spec.position.x_pct * CANVAS_W);
+  const centerY = Math.round(spec.position.y_pct * CANVAS_H);
+  const left = Math.max(0, Math.min(centerX - Math.round(w / 2), CANVAS_W - w));
+  const top = Math.max(0, Math.min(centerY - Math.round(h / 2), CANVAS_H - h));
+
+  // Apply treatment (saturation/brightness) if present
+  if (spec.treatment?.saturation || spec.treatment?.brightness) {
+    working = await sharp(working).modulate({
+      saturation: spec.treatment.saturation ?? 1.0,
+      brightness: spec.treatment.brightness ?? 1.0,
+    }).toBuffer();
+  }
+
+  return { buffer: working, left, top, w, h };
+}
+
+// ---------------------------------------------------------------------------
+// renderComposition — the new AI-driven render path.
+// Consumes a CompositionSpec from the Composer, executes it deterministically.
+// Old renderTemplate is kept alive below until cutover is complete.
+// ---------------------------------------------------------------------------
+
+export async function renderComposition(input: CompositionRenderInput): Promise<Buffer> {
+  ensureFontsRegistered();
+
+  const { spec, source_frame_urls, subject_urls, watermark_url, watermark_position } = input;
+
+  // ---- 1. Fetch all source assets ----
+  // Source frames (one per index referenced by figures, but we'll just fetch all and pick by index).
+  // Subject cutouts (bg-removed) — same pattern.
+  if (source_frame_urls.length === 0) throw new Error('renderComposition: no source_frame_urls provided');
+  if (subject_urls.length === 0) throw new Error('renderComposition: no subject_urls provided');
+
+  const [sourceFrames, subjects] = await Promise.all([
+    Promise.all(source_frame_urls.map(fetchBuffer)),
+    Promise.all(subject_urls.map(fetchBuffer)),
+  ]);
+
+  // Prep subjects (existing helper does saturation/contrast/edge cleanup)
+  const preppedSubjects = await Promise.all(subjects.map(prepSubject));
+
+  // ---- 2. Brand color fallback ----
+  // The Composer should output palette colors directly, but if a bg spec leaves colors empty,
+  // fall back to the brand pink/purple. The renderer doesn't know the model's brand colors
+  // directly — they need to be threaded through. For now, use sensible defaults; the Inngest
+  // function passes them via the spec's bg.colors when calling.
+  const brandColors = {
+    primary: spec.background.colors?.[0] || '#FF1493',
+    accent: spec.background.colors?.[1] || '#9D4EDD',
+  };
+
+  // ---- 3. Render background ----
+  // For frame-saturated mode, the bg uses the source frame. Prefer the frame_index
+  // of any background-frame figure if one exists (those compositions explicitly tie
+  // bg and overlay to specific frames). Otherwise default to frame 0.
+  const bgFrameFigure = spec.figures.find((f) => f.role === 'background-frame');
+  const bgFrameIdx = bgFrameFigure?.frame_index ?? 0;
+  const bgSourceFrame = sourceFrames[bgFrameIdx] || sourceFrames[0];
+
+  let backgroundBuf = await renderComposerBackground(spec.background, bgSourceFrame, brandColors);
+  // Slight darken — same polish step renderTemplate does, keeps tones richer.
+  backgroundBuf = await sharp(backgroundBuf).modulate({ brightness: 0.92 }).toBuffer();
+
+  // ---- 4. Process figures in z-order ----
+  // Z-order: background-frame -> flank/hero -> overlay -> (lockup, watermark added later)
+  const zOrder: Record<FigureRole, number> = {
+    'background-frame': 0,
+    'flank-left': 1,
+    'flank-right': 1,
+    'hero': 2,
+    'overlay': 3,
+  };
+
+  const sortedFigures = [...spec.figures].sort((a, b) => zOrder[a.role] - zOrder[b.role]);
+
+  // Resolve each figure's source asset based on its crop level.
+  // 'frame' uses the source frame; everything else uses the bg-removed subject.
+  // For multi-figure specs, we round-robin through subjects/frames so each figure can
+  // come from a different source if the Composer specified that intent.
+  const placedFigures: Array<{
+    spec: FigureSpec;
+    placement: { buffer: Buffer; left: number; top: number; w: number; h: number };
+  }> = [];
+
+  for (let i = 0; i < sortedFigures.length; i++) {
+    const figSpec = sortedFigures[i];
+    // Use the figure's specified frame_index (defaults to 0). Clamp to available range.
+    const frameIdx = Math.min(
+      Math.max(0, figSpec.frame_index ?? 0),
+      Math.max(preppedSubjects.length, sourceFrames.length) - 1
+    );
+    const subjectBuf = preppedSubjects[frameIdx % preppedSubjects.length];
+    const frameBuf = sourceFrames[frameIdx % sourceFrames.length];
+
+    const cropped = await cropFigure(subjectBuf, frameBuf, figSpec.crop);
+    const placed = await placeComposerFigure(cropped, figSpec);
+    placedFigures.push({ spec: figSpec, placement: placed });
+  }
+
+  // ---- 5. Composite layers ----
+  const overlays: sharp.OverlayOptions[] = [];
+
+  // For each figure (in z-order), add: shadow, then figure, then rim light if specified
+  for (const { spec: figSpec, placement } of placedFigures) {
+    // Shadow goes behind everything in this figure's stack
+    const shadowBuf = await subjectShadow(placement.buffer, 0.5);
+    overlays.push({ input: shadowBuf, left: placement.left + 12, top: placement.top + 18 });
+
+    // The figure itself
+    overlays.push({ input: placement.buffer, left: placement.left, top: placement.top });
+
+    // Rim light if treatment specified
+    if (figSpec.treatment?.rim_light) {
+      const rim = await subjectRimLight(placement.buffer, figSpec.treatment.rim_light, 0.4);
+      overlays.push({ input: rim, left: placement.left, top: placement.top, blend: 'screen' });
+    }
+  }
+
+  // ---- 6. Lockup ----
+  const placement = textPlacementFromPct(spec.text_placement);
+  const lockupBuf = renderLockupWithCanvas({
+    lockup: spec.lockup,
+    placement,
+    canvasW: CANVAS_W,
+    canvasH: CANVAS_H,
+  });
+  overlays.push({ input: lockupBuf, left: 0, top: 0 });
+
+  // ---- 7. Watermark ----
+  if (watermark_url) {
+    const wmRaw = await fetchBuffer(watermark_url);
+    const wmSized = await sharp(wmRaw)
+      .resize({ width: Math.round(CANVAS_W * 0.12), withoutEnlargement: true })
+      .toBuffer();
+    const wmMeta = await sharp(wmSized).metadata();
+    const offset = wmOffset(watermark_position, wmMeta.width || 0, wmMeta.height || 0);
+    overlays.push({ input: wmSized, left: offset.left, top: offset.top });
+  }
+
+  // ---- 8. Composite all layers and apply polish ----
+  const composite = await sharp(backgroundBuf).composite(overlays).png().toBuffer();
+  return polishPass(composite);
+}
 
 export async function renderTemplate(input: TemplateRenderInput): Promise<Buffer> {
   const template = TEMPLATES[input.template_id];

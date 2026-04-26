@@ -4,7 +4,8 @@ export type StageName =
   | 'frame_extraction'
   | 'auto_description'
   | 'frame_scoring'
-  | 'template_selection'
+  | 'template_selection'      // legacy — kept for old clip checkpoints
+  | 'composition_planning'    // composer-v1 replacement for template_selection
   | 'subject_cutouts';
 
 export async function markStageRunning(clipId: string, stage: StageName, input?: Record<string, unknown>) {

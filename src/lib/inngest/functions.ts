@@ -5,9 +5,10 @@ import { extractFrames, downloadToTmp, cleanup } from '@/lib/ffmpeg';
 import {
   scoreFrames,
   generateAutoDescription,
-  selectTemplatesForClip,
 } from '@/lib/pipeline/prompts';
-import { renderTemplate } from '@/lib/pipeline/template-renderer';
+import { composeVariantsForClip } from '@/lib/pipeline/composer';
+import { renderComposition } from '@/lib/pipeline/template-renderer';
+import type { CompositionSpec } from '@/lib/pipeline/template-renderer';
 import { removeBackground } from '@/lib/replicate';
 import {
   markStageRunning,
@@ -15,7 +16,6 @@ import {
   markStageFailed,
   getCompletedStage,
 } from '@/lib/pipeline/stages';
-import { TEMPLATES } from '@/lib/pipeline/templates';
 import type { Clip, Model, StyleLibraryItem } from '@/lib/supabase/types';
 
 // ---------------------------------------------------------------------------
@@ -184,28 +184,30 @@ export const processClip = inngest.createFunction(
     });
 
     // -----------------------------------------------------------------------
-    // Stage: template_selection — Claude picks 3 templates + writes hook copy
+    // Stage: composition_planning — Composer (Claude vision) returns 6 specs
+    // Replaces the old template_selection stage. New stage key means old
+    // checkpoints from prior renders are ignored and the clip re-runs from here.
     // -----------------------------------------------------------------------
-    const selections = await step.run('template_selection', async () => {
-      const existing = await getCompletedStage(clipId, 'template_selection');
-      if (existing?.output) return (existing.output as { selections: Awaited<ReturnType<typeof selectTemplatesForClip>> }).selections;
+    const compositions = await step.run('composition_planning', async () => {
+      const existing = await getCompletedStage(clipId, 'composition_planning');
+      if (existing?.output) return (existing.output as { compositions: CompositionSpec[] }).compositions;
 
-      await markStageRunning(clipId, 'template_selection');
-      await updateStatus('Selecting templates and writing copy...');
+      await markStageRunning(clipId, 'composition_planning');
+      await updateStatus('Composing 6 thumbnail variants...');
 
       try {
         const ctx = await loadContext();
-        const picks = await selectTemplatesForClip(
+        const specs = await composeVariantsForClip(
           scoredOutput.top,
           ctx.clip,
           ctx.model,
           ctx.thumbExamples,
           ctx.descExamples
         );
-        await markStageComplete(clipId, 'template_selection', { selections: picks });
-        return picks;
+        await markStageComplete(clipId, 'composition_planning', { compositions: specs });
+        return specs;
       } catch (err) {
-        await markStageFailed(clipId, 'template_selection', err instanceof Error ? err.message : String(err));
+        await markStageFailed(clipId, 'composition_planning', err instanceof Error ? err.message : String(err));
         throw err;
       }
     });
@@ -221,17 +223,18 @@ export const processClip = inngest.createFunction(
       await updateStatus('Removing backgrounds from subjects...');
 
       try {
-        // Figure out which frame indices are needed across all 3 templates
+        // Figure out which frame indices are needed across all 6 compositions.
+        // Each figure declares its own frame_index (defaults to 0). We bg-remove
+        // only the frames that at least one figure references.
         const neededIndices = new Set<number>();
-        for (const sel of selections) {
-          const template = TEMPLATES[sel.template_id];
-          if (!template) continue;
-          // Use the selection's frame_indices, or fall back to [0]
-          const indices = (sel.frame_indices && sel.frame_indices.length > 0) ? sel.frame_indices : [0];
-          for (const idx of indices.slice(0, template.frames_needed)) {
+        for (const comp of compositions) {
+          for (const fig of comp.figures) {
+            const idx = fig.frame_index ?? 0;
             neededIndices.add(idx);
           }
         }
+        // Always ensure frame 0 is in the set as a safety net (the renderer falls back to 0).
+        neededIndices.add(0);
 
         const map: Record<number, string> = {};
         for (const idx of neededIndices) {
@@ -262,35 +265,31 @@ export const processClip = inngest.createFunction(
     });
 
     // -----------------------------------------------------------------------
-    // Stage: render_variants — render each template into final thumbnail
+    // Stage: render_variants — execute each CompositionSpec via renderComposition
     // -----------------------------------------------------------------------
-    for (let i = 0; i < selections.length; i++) {
-      const sel = selections[i];
-      const template = TEMPLATES[sel.template_id];
-      if (!template) continue;
+    for (let i = 0; i < compositions.length; i++) {
+      const spec = compositions[i];
       const variantIndex = i + 1;
 
       await step.run(`render_variant_${variantIndex}`, async () => {
-        await updateStatus(`Rendering variant ${variantIndex}/${selections.length} (${template.name})...`);
+        await updateStatus(`Rendering variant ${variantIndex}/${compositions.length}...`);
 
         const ctx = await loadContext();
 
-        // Pick the subject URLs this template needs
-        const indices = (sel.frame_indices && sel.frame_indices.length > 0) ? sel.frame_indices : [0];
+        // Build per-frame source arrays. We pass ALL 3 frames + cutouts so the
+        // renderer can pick by frame_index. Order matters: index 0 is frame 0, etc.
+        const sourceFrameUrls: string[] = [];
         const subjectUrls: string[] = [];
-        for (let j = 0; j < template.frames_needed; j++) {
-          const idx = indices[j] ?? 0;
-          const url = cutoutMap[idx];
-          if (!url) throw new Error(`Missing cutout for frame index ${idx}`);
-          subjectUrls.push(url);
+        for (let j = 0; j < scoredOutput.top.length; j++) {
+          sourceFrameUrls.push(scoredOutput.top[j].url);
+          // Use the cutout for this frame if we have one; else fall back to the cutout for frame 0.
+          subjectUrls.push(cutoutMap[j] ?? cutoutMap[0]);
         }
 
-        const pngBuf = await renderTemplate({
-          template_id: sel.template_id,
+        const pngBuf = await renderComposition({
+          spec,
+          source_frame_urls: sourceFrameUrls,
           subject_urls: subjectUrls,
-          lockup: sel.lockup,
-          palette: sel.palette,
-          background_prompt: sel.background_prompt,
           watermark_url: ctx.model.watermark_url,
           watermark_position: (ctx.model.watermark_position as 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'center' | undefined) || 'bottom-right',
         });
@@ -304,16 +303,17 @@ export const processClip = inngest.createFunction(
           clip_id: clipId,
           variant_index: variantIndex,
           image_url: publicUrl,
-          template_id: sel.template_id,
+          template_id: 'composer-v1',
           composition_brief: {
-            template_id: sel.template_id,
-            lockup: sel.lockup,
-            palette: sel.palette,
-            reasoning: sel.reasoning,
+            composer_version: 'v1',
+            spec,
+            reasoning: spec.reasoning,
           },
           generation_metadata: {
-            template: template.name,
-            frame_indices: indices,
+            renderer: 'composer-v1',
+            figure_count: spec.figures.length,
+            background_mode: spec.background.mode,
+            frame_indices_used: spec.figures.map((f) => f.frame_index ?? 0),
           },
         });
       });
@@ -327,7 +327,7 @@ export const processClip = inngest.createFunction(
       status_message: 'Thumbnails generated.',
     }).eq('id', clipId);
 
-    return { success: true, variants_rendered: selections.length };
+    return { success: true, variants_rendered: compositions.length };
   }
 );
 
