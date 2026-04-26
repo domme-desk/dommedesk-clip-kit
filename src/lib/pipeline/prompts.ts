@@ -682,14 +682,24 @@ function postProcessSelections(
   }
 
   // Enforce 3+3 thematic/simple split for 6-variant batches
+  // Visual-complexity classifier — matches on prompt content, not just the literal word "simple".
+  // A "soft pink gradient with bokeh" reads as visually simple even when the concept doesn't say so.
+  const SIMPLE_BG_SIGNALS = [
+    'simple', 'gradient', 'flat', 'solid', 'bokeh', 'soft', 'blur', 'blurred',
+    'minimal', 'studio', 'clean', 'plain', 'monochrome', 'spiral', 'algorithmic',
+  ];
+  const isVisuallySimple = (s: TemplateSelection): boolean => {
+    if (!s.background_prompt || s.background_prompt.trim().length === 0) return true;
+    const haystack = ((s.background_concept || '') + ' ' + (s.background_prompt || '')).toLowerCase();
+    // Strong signal: the prompt is mostly about lighting/color, not scene
+    return SIMPLE_BG_SIGNALS.some((sig) => haystack.includes(sig));
+  };
+
   if (selections.length === 6) {
     const thematicIndices: number[] = [];
     const simpleIndices: number[] = [];
     selections.forEach((s, i) => {
-      const isSimple = !s.background_prompt
-        || s.background_prompt.trim().length === 0
-        || (s.background_concept || '').toLowerCase().includes('simple');
-      if (isSimple) simpleIndices.push(i);
+      if (isVisuallySimple(s)) simpleIndices.push(i);
       else thematicIndices.push(i);
     });
 
@@ -720,12 +730,9 @@ function postProcessSelections(
       brandAccent,                 // bg_accent FORCED to brand
     ], s.template_id),
     background_concept: s.background_concept || 'simple',
-    // Treat 'simple' concept, empty/null prompt, or prompts containing 'simple' as algorithmic-bg (pass null)
-    background_prompt: (
-      !s.background_prompt
-      || s.background_prompt.trim().length === 0
-      || (s.background_concept || '').toLowerCase().includes('simple')
-    ) ? null : s.background_prompt,
+    // Pass null for visually-simple bgs (algorithmic rendering); pass the Flux prompt for thematic.
+    // Uses the same isVisuallySimple helper as the diversity check above for consistency.
+    background_prompt: isVisuallySimple(s) ? null : s.background_prompt,
   }));
 }
 
@@ -871,9 +878,18 @@ RULES:
 
    To comply: mark exactly 3 variants as "simple" (background_concept='simple', background_prompt=null) and exactly 3 as thematic (with real scene prompts).
 
+   **THE MODEL ALWAYS POPS — figure-environment awareness:**
+   Before assigning a thematic background to a variant, study its source frame. The figure already brings its own visual environment with it (bedroom set, on-location backdrop, studio walls, props, complex lighting). The bg layer and the figure's surroundings together determine how busy the thumbnail feels.
+
+   - **Frame has a busy/themed environment already** (visible bedroom, on-location, ornate props, dramatic colored lighting): assign this variant a SIMPLE bg. The figure's own context carries the theme; a thematic bg layer would compete with it and make the model harder to see.
+   - **Frame is clean/studio/neutral** (plain backdrop, soft single-color lighting, minimal context): the bg layer can do more visual work. Assign thematic if the clip warrants it.
+
+   When in doubt, default toward simple. The model is the visual focus on every variant. Backgrounds support, never compete.
+
    **Rules for thematic variants:**
    - Match emotional vibe of the clip (tags, title, description)
    - Examples: hypno → "heavenly cloud dreamscape" / chastity → "royal throne room velvet" / tease → "moonlit silk bedroom" / humiliation → "neon lit club interior" / angel → "heavenly clouds golden sunlight"
+   - Reserve elaborate themed scenes for clips whose tags or title genuinely call for one. A generic untagged clip rarely needs three full themed scenes — when uncertain, the busiest of the three thematic slots can be a softer "simple-thematic" (e.g. "soft pink gradient with bokeh", "monochrome purple atmospheric") rather than a full environment.
 
    **Rules for background_prompt (Flux-ready):**
    - DESCRIBE THE SCENE ONLY. No people. No kink objects. No text. No watermarks.
